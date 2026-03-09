@@ -11,7 +11,7 @@ alwaysApply: true
 **项目名称：** Sentinel AI
 **目标：** 扫描 Java 项目中的所有 SQL，结合表结构和生产数据量，判断是否走索引、是否为潜在慢 SQL，并结合 AI 给出优化建议。
 **项目路径：** `e:\cursor\sentinel-ai\`
-**GitHub 仓库：** `https://github.com/zhuangjie/sentinel-ai`（待创建）
+**GitHub 仓库：** `https://github.com/prove0603/sentinel-ai`
 **GroupId：** `com.zhuangjie`
 **包名：** `com.zhuangjie.sentinel`
 **作者：** 庄杰 (Zhuang Jie)

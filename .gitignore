@@ -44,6 +44,7 @@ logs/
 ### H2 database files ###
 data/
 
-### Cursor IDE (personal settings, keep rules if you want to share project context) ###
-.cursor/
+### Cursor IDE - only ignore personal/local settings, keep rules for project context ###
+.cursor/mcp.json
+.cursor/settings.json
 

@@ -1,0 +1,29 @@
+import { createRouter, createWebHistory } from 'vue-router'
+
+const router = createRouter({
+  history: createWebHistory(),
+  routes: [
+    {
+      path: '/',
+      name: 'Dashboard',
+      component: () => import('../views/Dashboard.vue')
+    },
+    {
+      path: '/projects',
+      name: 'Projects',
+      component: () => import('../views/Projects.vue')
+    },
+    {
+      path: '/scans',
+      name: 'Scans',
+      component: () => import('../views/Scans.vue')
+    },
+    {
+      path: '/analysis',
+      name: 'Analysis',
+      component: () => import('../views/Analysis.vue')
+    }
+  ]
+})
+
+export default router

@@ -1,0 +1,171 @@
+---
+description: Sentinel AI 项目的设计方案、技术决策和上下文，在处理该项目相关任务时自动应用
+globs: 
+alwaysApply: true
+---
+
+# Sentinel AI — 项目设计文档
+
+## 项目概述
+
+**项目名称：** Sentinel AI
+**目标：** 扫描 Java 项目中的所有 SQL，结合表结构和生产数据量，判断是否走索引、是否为潜在慢 SQL，并结合 AI 给出优化建议。
+**项目路径：** `e:\cursor\sentinel-ai\`
+**GitHub 仓库：** `https://github.com/zhuangjie/sentinel-ai`（待创建）
+**GroupId：** `com.zhuangjie`
+**包名：** `com.zhuangjie.sentinel`
+**作者：** 庄杰 (Zhuang Jie)
+**项目定位：** 独立的 Spring Boot Web 项目（含 WebUI），便于展示和后续开源扩展。
+
+---
+
+## 技术栈
+
+| 层面 | 技术 | 版本 |
+|------|------|------|
+| Java | Java 21 LTS | 21 |
+| 后端框架 | Spring Boot | 3.4.3 |
+| AI 框架 | Spring AI Alibaba (DashScope) | 1.1.2.1 |
+| AI 模型 | 通义千问 Qwen-Max / Qwen-Turbo | - |
+| ORM | MyBatis-Plus | 3.5.7 |
+| SQL 解析 | JSqlParser | 5.0 |
+| Java 源码 AST | JavaParser | 3.26.2 |
+| Git 增量检测 | JGit | 7.1.0 |
+| 缓存 | Caffeine | 3.1.8 |
+| 工具 | Hutool, Guava | latest |
+| 前端 | Vue 3 + Vite + Element Plus + TypeScript | Vue 3.5, Vite 6 |
+| 数据库 | MySQL (prod) / H2 (dev) | - |
+| 构建 | Maven 多模块 | - |
+
+---
+
+## 项目结构
+
+```
+sentinel-ai/
+├── pom.xml                          # 父 POM
+├── sentinel-ai-server/              # Spring Boot 后端
+│   ├── pom.xml
+│   └── src/main/java/com/zhuangjie/sentinel/
+│       ├── SentinelAiApplication.java
+│       ├── config/                  # 配置类
+│       ├── common/                  # Result, PageResult 等
+│       ├── controller/              # REST API
+│       ├── service/                 # 业务逻辑
+│       ├── scanner/                 # SQL 提取引擎
+│       ├── delta/                   # Git 增量检测
+│       ├── analyzer/                # 规则引擎 + AI 分析
+│       │   └── rules/              # 规则集
+│       ├── knowledge/               # RAG 知识库
+│       ├── db/
+│       │   ├── entity/             # 实体类
+│       │   ├── mapper/             # Mapper 接口
+│       │   └── service/            # DB Service (ServiceImpl)
+│       └── pojo/
+│           ├── dto/                # record DTO
+│           ├── vo/                 # record VO
+│           └── enums/              # 枚举
+├── sentinel-ai-ui/                  # Vue 3 前端
+│   ├── package.json
+│   ├── vite.config.ts              # 代理 /api -> localhost:8090
+│   └── src/
+│       ├── views/                  # 页面组件
+│       ├── components/             # 公共组件
+│       ├── api/                    # API 封装 (axios)
+│       ├── router/                 # Vue Router
+│       └── styles/
+└── .cursor/rules/
+```
+
+---
+
+## 核心模块
+
+### Scanner (SQL 提取引擎)
+- `MapperXmlScanner` - 解析 mapper.xml，处理动态 SQL (<if>, <choose>, <foreach>)
+- `QueryWrapperScanner` - JavaParser AST 分析 QueryWrapper/LambdaQueryWrapper
+- `AnnotationSqlScanner` - 扫描 @Select/@Insert 等注解 SQL
+- `DynamicSqlExpander` - 展开动态 SQL 的多种执行路径
+
+### Delta (增量检测)
+- `GitDeltaDetector` - JGit 获取 commit diff
+- `SqlHashComparator` - SQL 标准化后 hash 对比
+
+### Analyzer (分析引擎)
+- `RuleBasedAnalyzer` - 规则引擎（同步，毫秒级）
+- `AiSqlAnalyzer` - Spring AI Alibaba 深度分析（异步）
+- 规则集: FullTableScan, LikeLeadingWildcard, ImplicitConversion, LargeJoin, DeepPagination, NoConditionDynamicSql
+
+### AI 集成 (Spring AI Alibaba)
+- 使用 `spring-ai-alibaba-starter-dashscope` 对接通义千问
+- `ChatClient` 做 SQL 性能分析，结构化输出为 `SqlRiskAssessment` record
+- AI 调用策略：规则前置过滤 → Caffeine 缓存 → 模型分级 (Max/Turbo) → 异步执行
+
+---
+
+## 数据库表
+
+```
+t_project_config   -- 项目配置
+t_table_meta       -- 表结构元数据
+t_sql_record       -- SQL 记录
+t_scan_batch       -- 扫描批次
+t_sql_analysis     -- 分析结果
+```
+
+---
+
+## API 路径
+
+- `/api/project/*` - 项目管理
+- `/api/scan/*` - 扫描触发/历史
+- `/api/analysis/*` - 分析结果
+- `/api/dashboard/*` - 仪表盘
+
+---
+
+## 开发约定
+
+- 代码结构：controller → service → db.service → mapper
+- 统一响应：`Result<T>` 和 `PageResult<T>`
+- 虚拟线程：`spring.threads.virtual.enabled=true`
+- Java 21 特性：
+  - `record` 用于 DTO/VO/AI 结构化输出
+  - `sealed interface` + `record` 用于规则类体系
+  - `pattern matching for switch` 用于类型分发
+  - 文本块 (`"""`) 用于 AI Prompt 模板
+- AI 调用缓存：Caffeine (key = sql_hash + table_meta_hash)
+- 开发环境用 H2 数据库 (文件模式)，生产用 MySQL
+- 前端开发代理：Vite `proxy /api -> http://localhost:8090`
+- 前端 build 输出到 `sentinel-ai-server/src/main/resources/static/`
+
+---
+
+## 实施路线图
+
+- **P1（MVP）：** XML Mapper 扫描 + 规则引擎 + 基础 WebUI ← 当前阶段
+- **P2：** Spring AI Alibaba 集成 + Prompt 工程 + 结构化输出
+- **P3：** JGit 增量扫描
+- **P4：** JavaParser 解析 QueryWrapper/LambdaQueryWrapper
+- **P5：** RAG 知识库
+- **P6：** 完善 Dashboard、通知、导出报告、开源准备
+
+---
+
+## 环境信息
+
+- **JDK 21 路径：** `C:\Users\zhuangjie10\.jdks\jdk-21`（Temurin 21.0.6）
+- **构建时设置：** `$env:JAVA_HOME = "$env:USERPROFILE\.jdks\jdk-21"` 然后 `mvn compile`
+- **后端端口：** 8090
+- **前端开发端口：** 5173（`npm run dev` in sentinel-ai-ui）
+- **H2 控制台：** http://localhost:8090/h2-console（dev 环境）
+- **数据库文件：** `./data/sentinel-ai.mv.db`（H2 文件模式，运行目录下自动创建）
+
+---
+
+## 注意事项
+
+- GroupId 使用 `com.zhuangjie`，不要使用 `com.al.risk`（开源合规）
+- 项目名 sentinel-ai，不包含公司相关标识
+- 代码和注释中不涉及公司内部信息
+- 新对话框中可用 `@sentinel-ai-project` 引用此规则文件获取完整项目上下文

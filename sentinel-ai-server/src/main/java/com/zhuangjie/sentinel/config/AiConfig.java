@@ -1,13 +1,19 @@
 package com.zhuangjie.sentinel.config;
 
 import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
 @Configuration
 public class AiConfig {
 
+    /**
+     * ChatClient bean is created only when sentinel.ai.enabled=true.
+     * Requires a valid AI_DASHSCOPE_API_KEY environment variable.
+     */
     @Bean
+    @ConditionalOnProperty(name = "sentinel.ai.enabled", havingValue = "true")
     public ChatClient sqlAnalysisChatClient(ChatClient.Builder builder) {
         return builder
                 .defaultSystem("""

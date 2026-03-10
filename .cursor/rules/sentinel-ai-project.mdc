@@ -49,21 +49,40 @@ sentinel-ai/
 │   └── src/main/java/com/zhuangjie/sentinel/
 │       ├── SentinelAiApplication.java
 │       ├── config/                  # 配置类
+│       │   ├── AiConfig.java
+│       │   ├── CacheConfig.java
+│       │   ├── MybatisPlusConfig.java
+│       │   ├── MybatisPlusMetaObjectHandler.java  ← P1 新增
+│       │   └── WebConfig.java
 │       ├── common/                  # Result, PageResult 等
 │       ├── controller/              # REST API
 │       ├── service/                 # 业务逻辑
-│       ├── scanner/                 # SQL 提取引擎
-│       ├── delta/                   # Git 增量检测
-│       ├── analyzer/                # 规则引擎 + AI 分析
-│       │   └── rules/              # 规则集
-│       ├── knowledge/               # RAG 知识库
+│       ├── scanner/                 # SQL 提取引擎 ← P1 新增
+│       │   ├── SqlScanner.java              # 扫描器接口
+│       │   ├── MapperXmlScanner.java        # Mapper XML 扫描实现
+│       │   ├── DynamicSqlExpander.java      # 动态 SQL 展开
+│       │   └── SqlNormalizer.java           # SQL 标准化 + 哈希
+│       ├── analyzer/                # 规则引擎 + AI 分析 ← P1 新增
+│       │   ├── RuleBasedAnalyzer.java       # 规则引擎编排器
+│       │   ├── AnalysisResult.java          # 分析结果 record
+│       │   └── rules/              # 规则集 (sealed interface + record)
+│       │       ├── SqlRule.java             # sealed interface
+│       │       ├── RuleViolation.java       # 违规 record
+│       │       ├── FullTableScanRule.java
+│       │       ├── LikeLeadingWildcardRule.java
+│       │       ├── ImplicitConversionRule.java
+│       │       ├── LargeJoinRule.java
+│       │       ├── DeepPaginationRule.java
+│       │       └── NoConditionDynamicSqlRule.java
+│       ├── delta/                   # Git 增量检测 (P3)
+│       ├── knowledge/               # RAG 知识库 (P5)
 │       ├── db/
 │       │   ├── entity/             # 实体类
 │       │   ├── mapper/             # Mapper 接口
 │       │   └── service/            # DB Service (ServiceImpl)
 │       └── pojo/
 │           ├── dto/                # record DTO
-│           ├── vo/                 # record VO
+│           ├── vo/                 # record VO (P2+)
 │           └── enums/              # 枚举
 ├── sentinel-ai-ui/                  # Vue 3 前端
 │   ├── package.json
@@ -81,25 +100,42 @@ sentinel-ai/
 
 ## 核心模块
 
-### Scanner (SQL 提取引擎)
-- `MapperXmlScanner` - 解析 mapper.xml，处理动态 SQL (<if>, <choose>, <foreach>)
-- `QueryWrapperScanner` - JavaParser AST 分析 QueryWrapper/LambdaQueryWrapper
-- `AnnotationSqlScanner` - 扫描 @Select/@Insert 等注解 SQL
-- `DynamicSqlExpander` - 展开动态 SQL 的多种执行路径
+### Scanner (SQL 提取引擎) — ✅ P1 已实现
+- `SqlScanner` - 扫描器接口，定义 `scan(Path projectRoot)` 方法
+- `MapperXmlScanner` - ✅ 解析 mapper.xml，递归遍历项目目录，提取 SQL，解析 `<sql>` 片段用于 `<include>` 引用
+- `DynamicSqlExpander` - ✅ 展开动态 SQL 的执行路径，支持双模式（ALL_TRUE/ALL_FALSE）
+  - 处理: `<if>`, `<choose>/<when>/<otherwise>`, `<where>`, `<set>`, `<trim>`, `<foreach>`, `<include>`, `<bind>`
+- `SqlNormalizer` - ✅ SQL 标准化（替换 `#{}/${}` → `?`，归一化空白）+ SHA-256 哈希
+- `QueryWrapperScanner` - 🔲 P4 阶段：JavaParser AST 分析 QueryWrapper/LambdaQueryWrapper
+- `AnnotationSqlScanner` - 🔲 P4 阶段：扫描 @Select/@Insert 等注解 SQL
 
-### Delta (增量检测)
+### Delta (增量检测) — 🔲 P3 阶段
 - `GitDeltaDetector` - JGit 获取 commit diff
 - `SqlHashComparator` - SQL 标准化后 hash 对比
 
-### Analyzer (分析引擎)
-- `RuleBasedAnalyzer` - 规则引擎（同步，毫秒级）
-- `AiSqlAnalyzer` - Spring AI Alibaba 深度分析（异步）
-- 规则集: FullTableScan, LikeLeadingWildcard, ImplicitConversion, LargeJoin, DeepPagination, NoConditionDynamicSql
+### Analyzer (分析引擎) — ✅ P1 规则引擎 + P2 AI 分析已实现
+- `RuleBasedAnalyzer` - ✅ 规则引擎编排器（同步，毫秒级），JSqlParser 解析 SQL AST 后运行所有规则
+- `AnalysisResult` - ✅ 分析结果聚合 record（violations + 最终风险等级）
+- `AiSqlAnalyzer` - ✅ P2 已实现：Spring AI Alibaba 深度分析
+  - Prompt 工程：包含 SQL 文本/类型/来源/规则引擎发现，要求 JSON 结构化回复
+  - 结构化输出：AI 返回 JSON → Hutool 解析为 `SqlRiskAssessment` record
+  - Caffeine 缓存：以 sqlHash 为 key 缓存 AI 结果，避免重复分析
+  - 容错重试：最多 1 次重试，指数退避
+  - `AiAnalysisDetail` 内部 record 包装 assessment + model + tokensUsed
+- 规则集 (sealed interface `SqlRule` + record 实现):
+  - `FullTableScanRule` ✅ — SELECT/UPDATE/DELETE 无 WHERE → P0
+  - `LikeLeadingWildcardRule` ✅ — LIKE '%xxx' 或 CONCAT('%',...) → P1
+  - `ImplicitConversionRule` ✅ — WHERE 中对列使用函数包裹（YEAR/CAST/DATE_FORMAT 等）→ P2
+  - `LargeJoinRule` ✅ — ≥3 表 JOIN P2，≥5 表 P1
+  - `DeepPaginationRule` ✅ — OFFSET ≥1K P2，≥10K P1，≥100K P0
+  - `NoConditionDynamicSqlRule` ✅ — 动态 SQL 所有条件可能为空 → P0
 
-### AI 集成 (Spring AI Alibaba)
+### AI 集成 (Spring AI Alibaba) — ✅ P2 已实现
 - 使用 `spring-ai-alibaba-starter-dashscope` 对接通义千问
-- `ChatClient` 做 SQL 性能分析，结构化输出为 `SqlRiskAssessment` record
-- AI 调用策略：规则前置过滤 → Caffeine 缓存 → 模型分级 (Max/Turbo) → 异步执行
+- `ChatClient` + system prompt（资深 MySQL DBA 角色）
+- `AiConfig` 用 `@ConditionalOnProperty(sentinel.ai.enabled=true)` 控制 ChatClient 创建
+- AI 调用策略：规则前置过滤（仅 P0/P1/P2）→ Caffeine 缓存 → AI 调用 → JSON 解析 → 更新分析记录
+- 结果写入 `t_sql_analysis` 的 ai_* 字段，finalRiskLevel 取规则+AI 中更严重的等级
 
 ---
 
@@ -143,8 +179,18 @@ t_sql_analysis     -- 分析结果
 
 ## 实施路线图
 
-- **P1（MVP）：** XML Mapper 扫描 + 规则引擎 + 基础 WebUI ← 当前阶段
-- **P2：** Spring AI Alibaba 集成 + Prompt 工程 + 结构化输出
+- **P1（MVP）：** XML Mapper 扫描 + 规则引擎 + 基础 WebUI ← **✅ 已完成并验证**
+  - ✅ MapperXmlScanner + DynamicSqlExpander + SqlNormalizer
+  - ✅ RuleBasedAnalyzer + 6 条规则（sealed interface + record）
+  - ✅ ScanService 完整扫描→分析→持久化流程
+  - ✅ MybatisPlusMetaObjectHandler 自动填充时间
+  - ✅ 已用真实项目验证全量扫描
+- **P2：** Spring AI Alibaba 集成 + Prompt 工程 + 结构化输出 ← **✅ 后端已完成，待配置 API Key 测试**
+  - ✅ AiSqlAnalyzer — Prompt 工程 + JSON 结构化输出 + Caffeine 缓存 + 容错重试
+  - ✅ AiConfig — @ConditionalOnProperty 控制 AI 开关
+  - ✅ ScanService 串联：规则引擎 → AI 深度分析（仅 P0/P1/P2） → 结果回写
+  - ✅ 配置：sentinel.ai.enabled + AI_DASHSCOPE_API_KEY 环境变量
+  - 🔲 配置通义千问 API Key 进行端到端测试
 - **P3：** JGit 增量扫描
 - **P4：** JavaParser 解析 QueryWrapper/LambdaQueryWrapper
 - **P5：** RAG 知识库

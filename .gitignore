@@ -41,6 +41,10 @@ logs/
 .env
 .env.local
 
+### Local config with secrets (API keys, passwords) ###
+**/application-dev.yml
+**/application-local.yml
+
 ### H2 database files ###
 data/
 

@@ -14,18 +14,16 @@ spring:
     url: jdbc:mysql://localhost:3306/sentinel_ai?useUnicode=true&characterEncoding=utf-8&serverTimezone=Asia/Shanghai&allowPublicKeyRetrieval=true&useSSL=false
     username: root
     password: root
+sentinel:
   ai:
-    dashscope:
-      api-key: ${AI_DASHSCOPE_API_KEY:your-api-key}
+    enabled: false
+    model: qwen-max
 
 mybatis-plus:
   mapper-locations: classpath*:/mapper/*.xml
   global-config:
     db-config:
       id-type: auto
-      logic-delete-field: deleted
-      logic-delete-value: 1
-      logic-not-delete-value: 0
   configuration:
     map-underscore-to-camel-case: true
     log-impl: org.apache.ibatis.logging.stdout.StdOutImpl

@@ -26,7 +26,7 @@ alwaysApply: true
 | Java | Java 21 LTS | 21 |
 | 后端框架 | Spring Boot | 3.4.3 |
 | AI 框架 | Spring AI Alibaba (DashScope) | 1.1.2.1 |
-| AI 模型 | 通义千问 Qwen-Max / Qwen-Turbo | - |
+| AI 模型 | 通义千问 Qwen-Plus / Qwen-Max | - |
 | ORM | MyBatis-Plus | 3.5.7 |
 | SQL 解析 | JSqlParser | 5.0 |
 | Java 源码 AST | JavaParser | 3.26.2 |
@@ -74,7 +74,11 @@ sentinel-ai/
 │       │       ├── LargeJoinRule.java
 │       │       ├── DeepPaginationRule.java
 │       │       └── NoConditionDynamicSqlRule.java
-│       ├── delta/                   # Git 增量检测 (P3)
+│       ├── delta/                   # Git 增量检测 ← P3 已实现
+│       │   ├── GitDeltaDetector.java      # JGit 变更检测
+│       │   ├── DeltaResult.java           # Git diff 结果 record
+│       │   ├── SqlHashComparator.java     # SQL 哈希对比
+│       │   └── ComparisonResult.java      # 对比结果 record
 │       ├── knowledge/               # RAG 知识库 (P5)
 │       ├── db/
 │       │   ├── entity/             # 实体类
@@ -109,9 +113,18 @@ sentinel-ai/
 - `QueryWrapperScanner` - 🔲 P4 阶段：JavaParser AST 分析 QueryWrapper/LambdaQueryWrapper
 - `AnnotationSqlScanner` - 🔲 P4 阶段：扫描 @Select/@Insert 等注解 SQL
 
-### Delta (增量检测) — 🔲 P3 阶段
-- `GitDeltaDetector` - JGit 获取 commit diff
-- `SqlHashComparator` - SQL 标准化后 hash 对比
+### Delta (增量检测) — ✅ P3 已实现
+- `GitDeltaDetector` - ✅ JGit 获取 commit diff，检测 added/modified/deleted 文件
+  - `resolveHead(Path)` 解析当前 HEAD commit hash
+  - `detectChanges(Path, fromCommit, toCommit)` 返回 `DeltaResult`
+  - 支持 rename 和 copy 检测
+- `DeltaResult` - ✅ record 封装 diff 结果
+  - `changedMapperXmlFiles()` 过滤出变更的 mapper XML 文件
+  - `deletedMapperXmlFiles()` 过滤出已删除的 mapper XML 文件
+- `SqlHashComparator` - ✅ SQL 标准化后 hash 对比
+  - `compare(currentSqls, existingRecords)` 返回 `ComparisonResult`
+  - 分类为 new / unchanged / removed
+- `ComparisonResult` - ✅ record 封装对比结果
 
 ### Analyzer (分析引擎) — ✅ P1 规则引擎 + P2 AI 分析已实现
 - `RuleBasedAnalyzer` - ✅ 规则引擎编排器（同步，毫秒级），JSqlParser 解析 SQL AST 后运行所有规则
@@ -185,13 +198,22 @@ t_sql_analysis     -- 分析结果
   - ✅ ScanService 完整扫描→分析→持久化流程
   - ✅ MybatisPlusMetaObjectHandler 自动填充时间
   - ✅ 已用真实项目验证全量扫描
-- **P2：** Spring AI Alibaba 集成 + Prompt 工程 + 结构化输出 ← **✅ 后端已完成，待配置 API Key 测试**
+- **P2：** Spring AI Alibaba 集成 + Prompt 工程 + 结构化输出 ← **✅ 已完成并验证**
   - ✅ AiSqlAnalyzer — Prompt 工程 + JSON 结构化输出 + Caffeine 缓存 + 容错重试
   - ✅ AiConfig — @ConditionalOnProperty 控制 AI 开关
   - ✅ ScanService 串联：规则引擎 → AI 深度分析（仅 P0/P1/P2） → 结果回写
   - ✅ 配置：sentinel.ai.enabled + AI_DASHSCOPE_API_KEY 环境变量
-  - 🔲 配置通义千问 API Key 进行端到端测试
-- **P3：** JGit 增量扫描
+  - ✅ 模型名称修正：使用 `qwen-plus`（非 qwen3.5-plus）
+  - ✅ 已通过端到端测试验证 AI 分析功能
+- **P3：** JGit 增量扫描 ← **✅ 已完成**
+  - ✅ GitDeltaDetector — JGit diff 检测变更文件（add/modify/delete/rename/copy）
+  - ✅ DeltaResult — 封装 diff 结果，过滤 mapper XML 文件
+  - ✅ SqlHashComparator — SQL 哈希对比，分类 new/unchanged/removed
+  - ✅ MapperXmlScanner.scanFiles() — 支持扫描指定文件列表（增量模式）
+  - ✅ ScanService 重构：doFullScan() + doIncrementalScan() 双模式
+  - ✅ ScanController 支持 forceFullScan 参数
+  - ✅ 增量扫描流程：Git diff → 过滤 mapper XML → 对比哈希 → 仅分析新 SQL → 标记已删除 SQL
+  - ✅ 全量扫描后自动记录 HEAD commit，后续自动走增量
 - **P4：** JavaParser 解析 QueryWrapper/LambdaQueryWrapper
 - **P5：** RAG 知识库
 - **P6：** 完善 Dashboard、通知、导出报告、开源准备

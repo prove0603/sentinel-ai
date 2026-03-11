@@ -27,7 +27,8 @@ export const projectApi = {
 }
 
 export const scanApi = {
-  trigger: (projectId: number) => api.post(`/scan/trigger/${projectId}`),
+  trigger: (projectId: number, forceFullScan: boolean = false) =>
+    api.post(`/scan/trigger/${projectId}`, null, { params: { forceFullScan } }),
   history: (params: any) => api.get('/scan/history', { params }),
   getBatch: (id: number) => api.get(`/scan/batch/${id}`)
 }

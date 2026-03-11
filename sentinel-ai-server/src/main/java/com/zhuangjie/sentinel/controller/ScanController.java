@@ -18,9 +18,11 @@ public class ScanController {
     private final ScanBatchDbService scanBatchDbService;
 
     @PostMapping("/trigger/{projectId}")
-    public Result<String> triggerScan(@PathVariable Long projectId) {
-        scanService.triggerScan(projectId);
-        return Result.ok("Scan triggered");
+    public Result<String> triggerScan(
+            @PathVariable Long projectId,
+            @RequestParam(defaultValue = "false") boolean forceFullScan) {
+        scanService.triggerScan(projectId, forceFullScan);
+        return Result.ok("Scan triggered" + (forceFullScan ? " (force full)" : ""));
     }
 
     @GetMapping("/history")

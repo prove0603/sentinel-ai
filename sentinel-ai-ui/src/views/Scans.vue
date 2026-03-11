@@ -11,9 +11,21 @@
           </el-tag>
         </template>
       </el-table-column>
+      <el-table-column label="Commit 范围" width="200" show-overflow-tooltip>
+        <template #default="{ row }">
+          <span v-if="row.fromCommit">
+            {{ row.fromCommit?.substring(0, 8) }}..{{ row.toCommit?.substring(0, 8) }}
+          </span>
+          <span v-else-if="row.toCommit">
+            {{ row.toCommit?.substring(0, 8) }} (全量)
+          </span>
+          <span v-else>-</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="totalSqlCount" label="SQL 总数" width="100" />
       <el-table-column prop="newSqlCount" label="新增" width="80" />
       <el-table-column prop="changedSqlCount" label="变更" width="80" />
+      <el-table-column prop="removedSqlCount" label="移除" width="80" />
       <el-table-column prop="riskSqlCount" label="风险" width="80" />
       <el-table-column prop="status" label="状态" width="100">
         <template #default="{ row }">

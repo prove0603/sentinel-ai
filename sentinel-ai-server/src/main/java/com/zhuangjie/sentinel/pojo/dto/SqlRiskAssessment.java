@@ -1,10 +1,13 @@
 package com.zhuangjie.sentinel.pojo.dto;
 
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
+
 import java.util.List;
 
 /**
- * Structured output from AI analysis. Spring AI maps the LLM response directly into this record.
+ * Structured output from AI analysis, deserialized from the LLM's JSON response.
  */
+@JsonIgnoreProperties(ignoreUnknown = true)
 public record SqlRiskAssessment(
         String riskLevel,
         boolean canUseIndex,

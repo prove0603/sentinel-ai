@@ -11,9 +11,12 @@
       <el-table-column prop="gitRepoPath" label="Git 仓库路径" show-overflow-tooltip />
       <el-table-column prop="lastScanCommit" label="最后扫描 Commit" width="180" show-overflow-tooltip />
       <el-table-column prop="lastScanTime" label="最后扫描时间" width="180" />
-      <el-table-column label="操作" width="200">
+      <el-table-column label="操作" width="280">
         <template #default="{ row }">
-          <el-button size="small" type="primary" @click="triggerScan(row.id)">扫描</el-button>
+          <el-button size="small" type="primary" @click="triggerScan(row.id, false)">
+            {{ row.lastScanCommit ? '增量扫描' : '全量扫描' }}
+          </el-button>
+          <el-button v-if="row.lastScanCommit" size="small" @click="triggerScan(row.id, true)">强制全量</el-button>
           <el-button size="small" type="danger" @click="handleDelete(row.id)">删除</el-button>
         </template>
       </el-table-column>
@@ -80,10 +83,10 @@ const handleCreate = async () => {
   }
 }
 
-const triggerScan = async (projectId: number) => {
+const triggerScan = async (projectId: number, forceFullScan: boolean = false) => {
   try {
-    await scanApi.trigger(projectId)
-    ElMessage.success('扫描已触发')
+    await scanApi.trigger(projectId, forceFullScan)
+    ElMessage.success(forceFullScan ? '全量扫描已触发' : '扫描已触发')
   } catch {
     ElMessage.error('触发扫描失败')
   }

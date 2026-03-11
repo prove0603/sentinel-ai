@@ -13,13 +13,23 @@ spring:
       mode: always
       schema-locations: classpath:db/schema.sql
   ai:
-    dashscope:
+    # 使用 OpenAI 兼容模式接入 DashScope（推荐）
+    openai:
+      base-url: https://dashscope.aliyuncs.com/compatible-mode
       api-key: sk-your-real-key-here   # 从 https://dashscope.console.aliyun.com/ 获取
+      chat:
+        options:
+          model: ${sentinel.ai.model:qwen-plus}
+          temperature: 0.2
+    retry:
+      max-attempts: 1
+      on-client-errors: false
 
 sentinel:
   ai:
     enabled: true      # 设为 false 可关闭 AI 分析（规则引擎仍然运行）
     model: qwen-max    # 可选: qwen-max（更准）/ qwen-turbo（更快更便宜）
+    max-ai-calls-per-scan: -1  # 每次扫描最多调用 AI 的条数，-1 表示不限制，测试时可设为 5
 
 logging:
   level:

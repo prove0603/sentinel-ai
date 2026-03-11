@@ -25,8 +25,8 @@ public class AnalysisService {
         return sqlAnalysisDbService.page(
                 new Page<>(current, size),
                 new LambdaQueryWrapper<SqlAnalysis>()
-                        .eq(riskLevel != null, SqlAnalysis::getFinalRiskLevel, riskLevel)
-                        .eq(handleStatus != null, SqlAnalysis::getHandleStatus, handleStatus)
+                        .eq(riskLevel != null && !riskLevel.isBlank(), SqlAnalysis::getFinalRiskLevel, riskLevel)
+                        .eq(handleStatus != null && !handleStatus.isBlank(), SqlAnalysis::getHandleStatus, handleStatus)
                         .orderByAsc(SqlAnalysis::getFinalRiskLevel)
                         .orderByDesc(SqlAnalysis::getCreateTime));
     }

@@ -1,6 +1,7 @@
 package com.zhuangjie.sentinel.analyzer;
 
-import cn.hutool.json.JSONUtil;
+import com.fasterxml.jackson.databind.DeserializationFeature;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zhuangjie.sentinel.analyzer.rules.RuleViolation;
 import com.zhuangjie.sentinel.pojo.dto.ScannedSql;
 import com.zhuangjie.sentinel.pojo.dto.SqlRiskAssessment;
@@ -29,6 +30,9 @@ public class AiSqlAnalyzer {
 
     private static final String CACHE_NAME = "ai-sql-analysis";
     private static final int MAX_RETRIES = 1;
+
+    private static final ObjectMapper MAPPER = new ObjectMapper()
+            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
     private static final String PROMPT_TEMPLATE = """
             请对以下 SQL 语句进行 MySQL 性能风险分析。
@@ -71,7 +75,7 @@ public class AiSqlAnalyzer {
     private final ChatClient chatClient;
     private final CacheManager cacheManager;
 
-    @Value("${sentinel.ai.model:qwen-max}")
+    @Value("${sentinel.ai.model:qwen3.5-plus}")
     private String model;
 
     public AiSqlAnalyzer(@Autowired(required = false) @Qualifier("sqlAnalysisChatClient") ChatClient chatClient,
@@ -161,13 +165,14 @@ public class AiSqlAnalyzer {
         return null;
     }
 
-    private SqlRiskAssessment parseResponse(String content) {
+    private SqlRiskAssessment parseResponse(String content) throws Exception {
         String json = content
                 .replaceAll("(?s)```json\\s*", "")
                 .replaceAll("(?s)```\\s*", "")
                 .trim();
 
-        return JSONUtil.toBean(json, SqlRiskAssessment.class);
+        log.debug("AI raw response: {}", json);
+        return MAPPER.readValue(json, SqlRiskAssessment.class);
     }
 
     private void sleep(long millis) {

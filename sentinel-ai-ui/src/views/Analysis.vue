@@ -107,11 +107,10 @@ const riskTagType = (level: string) => {
 
 const loadData = async () => {
   try {
-    const res: any = await analysisApi.page({
-      ...filters.value,
-      current: page.value,
-      size: 10
-    })
+    const params: Record<string, any> = { current: page.value, size: 10 }
+    if (filters.value.riskLevel) params.riskLevel = filters.value.riskLevel
+    if (filters.value.handleStatus) params.handleStatus = filters.value.handleStatus
+    const res: any = await analysisApi.page(params)
     records.value = res.data?.records ?? []
     total.value = res.data?.total ?? 0
   } catch {

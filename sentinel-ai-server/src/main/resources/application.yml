@@ -18,6 +18,7 @@ sentinel:
   ai:
     enabled: false
     model: qwen-max
+    max-ai-calls-per-scan: -1
 
 mybatis-plus:
   mapper-locations: classpath*:/mapper/*.xml

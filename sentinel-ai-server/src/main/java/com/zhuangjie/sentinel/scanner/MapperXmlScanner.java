@@ -33,13 +33,28 @@ public class MapperXmlScanner implements SqlScanner {
     public List<ScannedSql> scan(Path projectRoot) {
         List<Path> xmlFiles = findMapperXmlFiles(projectRoot);
         log.info("Found {} candidate XML files under {}", xmlFiles.size(), projectRoot);
+        return parseMapperXmlFiles(projectRoot, xmlFiles);
+    }
 
+    /**
+     * Scans only specific mapper XML files (used for incremental scanning).
+     */
+    public List<ScannedSql> scanFiles(Path projectRoot, List<Path> xmlFiles) {
+        log.info("Scanning {} specific mapper XML files", xmlFiles.size());
+        return parseMapperXmlFiles(projectRoot, xmlFiles);
+    }
+
+    private List<ScannedSql> parseMapperXmlFiles(Path projectRoot, List<Path> xmlFiles) {
         List<ScannedSql> results = new ArrayList<>();
         DocumentBuilderFactory dbf = DocumentBuilderFactory.newInstance();
         dbf.setNamespaceAware(false);
         disableDtdLoading(dbf);
 
         for (Path xmlFile : xmlFiles) {
+            if (!Files.exists(xmlFile)) {
+                log.debug("Skipping non-existent file: {}", xmlFile);
+                continue;
+            }
             try {
                 DocumentBuilder builder = dbf.newDocumentBuilder();
                 Document doc = builder.parse(xmlFile.toFile());

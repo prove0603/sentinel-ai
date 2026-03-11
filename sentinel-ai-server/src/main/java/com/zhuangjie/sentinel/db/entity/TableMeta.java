@@ -12,6 +12,8 @@ public class TableMeta {
     @TableId(type = IdType.AUTO)
     private Long id;
 
+    private Long projectId;
+
     private String tableName;
 
     private String ddlText;
@@ -22,6 +24,9 @@ public class TableMeta {
 
     /** JSON format index info */
     private String indexInfo;
+
+    @TableField(fill = FieldFill.INSERT)
+    private LocalDateTime createTime;
 
     @TableField(fill = FieldFill.INSERT_UPDATE)
     private LocalDateTime updateTime;

@@ -2,7 +2,7 @@ package com.zhuangjie.sentinel.analyzer;
 
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
-import com.zhuangjie.sentinel.analyzer.rules.RuleViolation;
+import com.zhuangjie.sentinel.knowledge.KnowledgeContextBuilder;
 import com.zhuangjie.sentinel.pojo.dto.ScannedSql;
 import com.zhuangjie.sentinel.pojo.dto.SqlRiskAssessment;
 import lombok.extern.slf4j.Slf4j;
@@ -15,14 +15,11 @@ import org.springframework.cache.Cache;
 import org.springframework.cache.CacheManager;
 import org.springframework.stereotype.Component;
 
-import java.util.List;
-import java.util.stream.Collectors;
-
 /**
- * AI-powered deep SQL analysis using Spring AI Alibaba (DashScope / Qwen).
+ * AI-powered SQL performance analysis using Spring AI Alibaba (DashScope / Qwen).
  * <p>
- * Strategy: rule pre-filter → Caffeine cache → model call → structured JSON output.
- * Only invoked for SQL already flagged P0/P1/P2 by the rule engine.
+ * All SQL statements are analyzed directly by AI with table structure context.
+ * Caffeine cache prevents redundant calls for the same SQL hash.
  */
 @Slf4j
 @Component
@@ -35,7 +32,7 @@ public class AiSqlAnalyzer {
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
     private static final String PROMPT_TEMPLATE = """
-            请对以下 SQL 语句进行 MySQL 性能风险分析。
+            你是一位资深 MySQL DBA，请对以下 SQL 语句进行性能风险分析。
 
             ## SQL 信息
             - **SQL 类型：** %s
@@ -45,14 +42,21 @@ public class AiSqlAnalyzer {
             %s
             ```
 
-            ## 规则引擎已发现的问题
             %s
 
             ## 分析要求
             1. 给出风险等级：P0（紧急-必定慢SQL）/ P1（高危）/ P2（中危）/ P3（低危）/ P4（安全）
             2. 判断是否能使用索引，若能使用则说明预计使用哪个索引
             3. 估算扫描行数（estimatedScanRows）和执行时间（estimatedExecTimeMs，单位毫秒）
-            4. 列出所有性能问题（issues 数组）
+            4. 列出所有性能问题（issues 数组），包括但不限于：
+               - 是否走索引、是否全表扫描
+               - LIKE 前导通配符
+               - 函数包裹列导致索引失效
+               - 隐式类型转换
+               - 多表 JOIN 性能问题
+               - 深分页问题
+               - 动态 SQL 所有条件为空导致全表扫描的风险
+               - 其他任何 MySQL 性能问题
             5. 给出索引创建建议（indexSuggestions 数组，用 SQL 语句表示）
             6. 给出 SQL 改写建议（rewriteSuggestions 数组，用改写后的 SQL 表示）
             7. 给出综合分析说明（explanation）
@@ -74,18 +78,22 @@ public class AiSqlAnalyzer {
 
     private final ChatClient chatClient;
     private final CacheManager cacheManager;
+    private final KnowledgeContextBuilder knowledgeContextBuilder;
 
-    @Value("${sentinel.ai.model:qwen3.5-plus}")
+    @Value("${sentinel.ai.model:qwen-plus}")
     private String model;
 
     public AiSqlAnalyzer(@Autowired(required = false) @Qualifier("sqlAnalysisChatClient") ChatClient chatClient,
-                          CacheManager cacheManager) {
+                          CacheManager cacheManager,
+                          @Autowired(required = false) KnowledgeContextBuilder knowledgeContextBuilder) {
         this.chatClient = chatClient;
         this.cacheManager = cacheManager;
+        this.knowledgeContextBuilder = knowledgeContextBuilder;
         if (chatClient == null) {
             log.info("AI analysis disabled: ChatClient not configured. Set sentinel.ai.enabled=true and AI_DASHSCOPE_API_KEY to enable.");
         } else {
-            log.info("AI analysis enabled");
+            log.info("AI analysis enabled, knowledge context: {}",
+                    knowledgeContextBuilder != null && knowledgeContextBuilder.isAvailable() ? "available" : "unavailable");
         }
     }
 
@@ -94,14 +102,14 @@ public class AiSqlAnalyzer {
     }
 
     /**
-     * Analyzes a SQL statement using AI. Returns null if AI is unavailable or analysis fails.
+     * Analyzes a SQL statement using AI.
      *
-     * @param sqlHash    normalized SQL hash (used as cache key)
-     * @param sql        the scanned SQL
-     * @param ruleResult the rule engine result for context
-     * @return AI assessment, or null on failure
+     * @param sqlHash     normalized SQL hash (used as cache key)
+     * @param sql         the scanned SQL
+     * @param projectName the project name for knowledge context retrieval (nullable)
+     * @return AI assessment, or null if AI unavailable or analysis fails
      */
-    public AiAnalysisDetail analyze(String sqlHash, ScannedSql sql, AnalysisResult ruleResult) {
+    public AiAnalysisDetail analyze(String sqlHash, ScannedSql sql, String projectName) {
         if (!isAvailable()) {
             return null;
         }
@@ -115,16 +123,22 @@ public class AiSqlAnalyzer {
             }
         }
 
-        String ruleIssues = ruleResult.violations().stream()
-                .map(RuleViolation::message)
-                .map(msg -> "- " + msg)
-                .collect(Collectors.joining("\n"));
-        if (ruleIssues.isBlank()) {
-            ruleIssues = "无";
+        String tableContext = "";
+        if (knowledgeContextBuilder != null && projectName != null) {
+            try {
+                tableContext = knowledgeContextBuilder.buildContext(sql.sqlNormalized(), projectName);
+            } catch (Exception e) {
+                log.warn("Failed to build knowledge context: {}", e.getMessage());
+            }
         }
 
+        log.debug("AI analyze: sqlHash={}, tableContext={}", sqlHash,
+                tableContext.isBlank() ? "EMPTY (no DDL matched)" : "HAS DDL (" + tableContext.length() + " chars)");
+
         String promptText = String.format(PROMPT_TEMPLATE,
-                sql.sqlType(), sql.sourceLocation(), sql.sqlNormalized(), ruleIssues);
+                sql.sqlType(), sql.sourceLocation(), sql.sqlNormalized(), tableContext);
+
+        log.debug("AI prompt:\n{}", promptText);
 
         AiAnalysisDetail detail = callWithRetry(promptText);
 
@@ -183,9 +197,6 @@ public class AiSqlAnalyzer {
         }
     }
 
-    /**
-     * Wraps the AI assessment result with metadata (model name, tokens used).
-     */
     public record AiAnalysisDetail(
             SqlRiskAssessment assessment,
             String model,

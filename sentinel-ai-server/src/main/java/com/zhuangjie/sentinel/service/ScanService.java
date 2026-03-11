@@ -3,9 +3,6 @@ package com.zhuangjie.sentinel.service;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.zhuangjie.sentinel.analyzer.AiSqlAnalyzer;
 import com.zhuangjie.sentinel.analyzer.AiSqlAnalyzer.AiAnalysisDetail;
-import com.zhuangjie.sentinel.analyzer.AnalysisResult;
-import com.zhuangjie.sentinel.analyzer.RuleBasedAnalyzer;
-import com.zhuangjie.sentinel.analyzer.rules.RuleViolation;
 import com.zhuangjie.sentinel.db.entity.ProjectConfig;
 import com.zhuangjie.sentinel.db.entity.ScanBatch;
 import com.zhuangjie.sentinel.db.entity.SqlAnalysis;
@@ -20,9 +17,10 @@ import com.zhuangjie.sentinel.delta.GitDeltaDetector;
 import com.zhuangjie.sentinel.delta.SqlHashComparator;
 import com.zhuangjie.sentinel.pojo.dto.ScannedSql;
 import com.zhuangjie.sentinel.pojo.dto.SqlRiskAssessment;
-import com.zhuangjie.sentinel.pojo.enums.RiskLevel;
 import com.zhuangjie.sentinel.pojo.enums.ScanType;
+import com.zhuangjie.sentinel.scanner.AnnotationSqlScanner;
 import com.zhuangjie.sentinel.scanner.MapperXmlScanner;
+import com.zhuangjie.sentinel.scanner.QueryWrapperScanner;
 import com.zhuangjie.sentinel.scanner.SqlNormalizer;
 import cn.hutool.json.JSONUtil;
 import lombok.RequiredArgsConstructor;
@@ -33,6 +31,7 @@ import org.springframework.stereotype.Service;
 
 import java.nio.file.Path;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
@@ -49,13 +48,17 @@ public class ScanService {
     private final SqlRecordDbService sqlRecordDbService;
     private final SqlAnalysisDbService sqlAnalysisDbService;
     private final MapperXmlScanner mapperXmlScanner;
-    private final RuleBasedAnalyzer ruleBasedAnalyzer;
+    private final AnnotationSqlScanner annotationSqlScanner;
+    private final QueryWrapperScanner queryWrapperScanner;
     private final AiSqlAnalyzer aiSqlAnalyzer;
     private final GitDeltaDetector gitDeltaDetector;
     private final SqlHashComparator sqlHashComparator;
 
     @Value("${sentinel.ai.max-ai-calls-per-scan:-1}")
     private int maxAiCallsPerScan;
+
+    @Value("${sentinel.dev.max-sql-per-scan:-1}")
+    private int maxSqlPerScan;
 
     @Async
     public CompletableFuture<ScanBatch> triggerScan(Long projectId, boolean forceFullScan) {
@@ -83,9 +86,10 @@ public class ScanService {
         long startTime = System.currentTimeMillis();
 
         try {
-            log.info("Scan started: projectId={}, type={}, batchId={}, aiEnabled={}, maxAiCalls={}",
+            log.info("Scan started: projectId={}, type={}, batchId={}, aiEnabled={}, maxAiCalls={}, maxSql={}",
                     projectId, scanType, batch.getId(), aiSqlAnalyzer.isAvailable(),
-                    maxAiCallsPerScan < 0 ? "unlimited" : maxAiCallsPerScan);
+                    maxAiCallsPerScan < 0 ? "unlimited" : maxAiCallsPerScan,
+                    maxSqlPerScan < 0 ? "unlimited" : maxSqlPerScan);
 
             if (isFullScan) {
                 doFullScan(batch, project, projectRoot);
@@ -114,7 +118,7 @@ public class ScanService {
     // ==================== Full Scan ====================
 
     private void doFullScan(ScanBatch batch, ProjectConfig project, Path projectRoot) {
-        List<ScannedSql> scannedSqls = mapperXmlScanner.scan(projectRoot);
+        List<ScannedSql> scannedSqls = scanAllSources(projectRoot);
 
         int riskCount = 0;
         int aiAnalyzedCount = 0;
@@ -126,22 +130,20 @@ public class ScanService {
                 continue;
             }
 
+            if (maxSqlPerScan > 0 && seenHashes.size() > maxSqlPerScan) {
+                log.info("Dev limit reached: max-sql-per-scan={}, stopping scan", maxSqlPerScan);
+                break;
+            }
+
             SqlRecord record = saveSqlRecord(scannedSql, sqlHash, project.getId(), batch.getId());
-            AnalysisResult ruleResult = ruleBasedAnalyzer.analyze(scannedSql);
 
-            if (!ruleResult.violations().isEmpty()) {
-                SqlAnalysis analysis = saveRuleAnalysisResult(record, batch.getId(), ruleResult);
-
-                boolean isHighRisk = ruleResult.riskLevel().ordinal() <= RiskLevel.P2.ordinal();
-                if (isHighRisk) {
-                    riskCount++;
-                }
-
-                if (shouldInvokeAi(aiAnalyzedCount, isHighRisk)) {
-                    AiAnalysisDetail aiDetail = aiSqlAnalyzer.analyze(sqlHash, scannedSql, ruleResult);
-                    if (aiDetail != null) {
-                        updateWithAiResult(analysis, aiDetail);
-                        aiAnalyzedCount++;
+            if (shouldInvokeAi(aiAnalyzedCount)) {
+                AiAnalysisDetail aiDetail = aiSqlAnalyzer.analyze(sqlHash, scannedSql, project.getProjectName());
+                if (aiDetail != null) {
+                    saveAiAnalysisResult(record, batch.getId(), aiDetail);
+                    aiAnalyzedCount++;
+                    if (isHighRisk(aiDetail.assessment().riskLevel())) {
+                        riskCount++;
                     }
                 }
             }
@@ -181,92 +183,57 @@ public class ScanService {
         int riskCount = 0;
         int aiAnalyzedCount = 0;
 
-        // Step 1: Handle deleted mapper XML files
         List<String> deletedFiles = delta.deletedMapperXmlFiles();
         if (!deletedFiles.isEmpty()) {
             removedCount += markRecordsAsRemoved(project.getId(), deletedFiles);
-            log.info("Marked {} SQL records as removed from {} deleted files",
-                    removedCount, deletedFiles.size());
         }
 
-        // Step 2: Handle added/modified mapper XML files
-        List<String> changedFiles = delta.changedMapperXmlFiles();
-        if (!changedFiles.isEmpty()) {
-            List<Path> absolutePaths = changedFiles.stream()
+        List<String> changedXmlFiles = delta.changedMapperXmlFiles();
+        if (!changedXmlFiles.isEmpty()) {
+            List<Path> xmlAbsolutePaths = changedXmlFiles.stream()
                     .map(projectRoot::resolve)
                     .toList();
+            List<ScannedSql> xmlSqls = mapperXmlScanner.scanFiles(projectRoot, xmlAbsolutePaths);
+            IncrementalProcessResult xmlResult = processIncrementalSqls(
+                    xmlSqls, changedXmlFiles, project, batch, aiAnalyzedCount);
+            newCount += xmlResult.newCount;
+            removedCount += xmlResult.removedCount;
+            riskCount += xmlResult.riskCount;
+            aiAnalyzedCount += xmlResult.aiAnalyzedCount;
+        }
 
-            List<ScannedSql> currentSqls = mapperXmlScanner.scanFiles(projectRoot, absolutePaths);
+        List<String> changedJavaFiles = delta.changedJavaFiles();
+        if (!changedJavaFiles.isEmpty()) {
+            List<Path> javaAbsolutePaths = changedJavaFiles.stream()
+                    .map(projectRoot::resolve)
+                    .toList();
+            List<ScannedSql> javaSqls = new ArrayList<>();
+            javaSqls.addAll(annotationSqlScanner.scanFiles(projectRoot, javaAbsolutePaths));
+            javaSqls.addAll(queryWrapperScanner.scanFiles(projectRoot, javaAbsolutePaths));
 
-            // Get existing records for these files
-            List<SqlRecord> existingRecords = sqlRecordDbService.list(
-                    new LambdaQueryWrapper<SqlRecord>()
-                            .eq(SqlRecord::getProjectId, project.getId())
-                            .in(SqlRecord::getSourceFile, changedFiles)
-                            .eq(SqlRecord::getStatus, 1));
-
-            ComparisonResult comparison = sqlHashComparator.compare(currentSqls, existingRecords);
-
-            // Process new SQL: save + analyze
-            Set<String> seenHashes = new HashSet<>();
-            for (ScannedSql newSql : comparison.newSqls()) {
-                String sqlHash = SqlNormalizer.hash(newSql.sqlNormalized());
-                if (sqlHash.isBlank() || !seenHashes.add(sqlHash)) {
-                    continue;
-                }
-
-                // Check if this hash already exists elsewhere in the project
-                boolean existsGlobally = sqlRecordDbService.count(
-                        new LambdaQueryWrapper<SqlRecord>()
-                                .eq(SqlRecord::getProjectId, project.getId())
-                                .eq(SqlRecord::getSqlHash, sqlHash)
-                                .eq(SqlRecord::getStatus, 1)) > 0;
-
-                if (existsGlobally) {
-                    updateLastScanId(project.getId(), sqlHash, batch.getId());
-                    continue;
-                }
-
-                SqlRecord record = saveSqlRecord(newSql, sqlHash, project.getId(), batch.getId());
-                AnalysisResult ruleResult = ruleBasedAnalyzer.analyze(newSql);
-                newCount++;
-
-                if (!ruleResult.violations().isEmpty()) {
-                    SqlAnalysis analysis = saveRuleAnalysisResult(record, batch.getId(), ruleResult);
-
-                    boolean isHighRisk = ruleResult.riskLevel().ordinal() <= RiskLevel.P2.ordinal();
-                    if (isHighRisk) {
-                        riskCount++;
-                    }
-
-                    if (shouldInvokeAi(aiAnalyzedCount, isHighRisk)) {
-                        AiAnalysisDetail aiDetail = aiSqlAnalyzer.analyze(sqlHash, newSql, ruleResult);
-                        if (aiDetail != null) {
-                            updateWithAiResult(analysis, aiDetail);
-                            aiAnalyzedCount++;
-                        }
-                    }
-                }
-            }
-
-            // Update lastScanId for unchanged SQL
-            for (String unchangedHash : comparison.unchangedHashes()) {
-                updateLastScanId(project.getId(), unchangedHash, batch.getId());
-            }
-
-            // Mark removed SQL from changed files
-            for (SqlRecord removed : comparison.removedRecords()) {
-                removed.setStatus(0);
-                removed.setUpdateTime(LocalDateTime.now());
-                sqlRecordDbService.updateById(removed);
-                removedCount++;
+            if (!javaSqls.isEmpty()) {
+                IncrementalProcessResult javaResult = processIncrementalSqls(
+                        javaSqls, changedJavaFiles, project, batch, aiAnalyzedCount);
+                newCount += javaResult.newCount;
+                removedCount += javaResult.removedCount;
+                riskCount += javaResult.riskCount;
+                aiAnalyzedCount += javaResult.aiAnalyzedCount;
             }
         }
 
-        int activeInChangedFiles = changedFiles.isEmpty() ? 0 :
+        List<String> deletedJavaFiles = delta.deletedJavaFiles();
+        if (!deletedJavaFiles.isEmpty()) {
+            removedCount += markRecordsAsRemoved(project.getId(), deletedJavaFiles);
+        }
+
+        List<String> allChangedFiles = new ArrayList<>();
+        allChangedFiles.addAll(delta.changedMapperXmlFiles());
+        allChangedFiles.addAll(delta.changedJavaFiles());
+
+        int activeInChangedFiles = allChangedFiles.isEmpty() ? 0 :
                 (int) sqlRecordDbService.count(new LambdaQueryWrapper<SqlRecord>()
                         .eq(SqlRecord::getProjectId, project.getId())
-                        .in(SqlRecord::getSourceFile, changedFiles)
+                        .in(SqlRecord::getSourceFile, allChangedFiles)
                         .eq(SqlRecord::getStatus, 1));
         batch.setTotalSqlCount(newCount + activeInChangedFiles);
         batch.setNewSqlCount(newCount);
@@ -278,13 +245,108 @@ public class ScanService {
                 batch.getId(), newCount, removedCount, riskCount, aiAnalyzedCount);
     }
 
+    // ==================== Incremental Processing ====================
+
+    private record IncrementalProcessResult(int newCount, int removedCount, int riskCount, int aiAnalyzedCount) {
+    }
+
+    private IncrementalProcessResult processIncrementalSqls(
+            List<ScannedSql> currentSqls, List<String> changedFiles,
+            ProjectConfig project, ScanBatch batch, int baseAiAnalyzedCount) {
+
+        List<SqlRecord> existingRecords = sqlRecordDbService.list(
+                new LambdaQueryWrapper<SqlRecord>()
+                        .eq(SqlRecord::getProjectId, project.getId())
+                        .in(SqlRecord::getSourceFile, changedFiles)
+                        .eq(SqlRecord::getStatus, 1));
+
+        ComparisonResult comparison = sqlHashComparator.compare(currentSqls, existingRecords);
+
+        int newCount = 0;
+        int removedCount = 0;
+        int riskCount = 0;
+        int aiAnalyzedCount = 0;
+        Set<String> seenHashes = new HashSet<>();
+
+        for (ScannedSql newSql : comparison.newSqls()) {
+            String sqlHash = SqlNormalizer.hash(newSql.sqlNormalized());
+            if (sqlHash.isBlank() || !seenHashes.add(sqlHash)) {
+                continue;
+            }
+
+            if (maxSqlPerScan > 0 && newCount >= maxSqlPerScan) {
+                log.info("Dev limit reached: max-sql-per-scan={}, stopping incremental processing", maxSqlPerScan);
+                break;
+            }
+
+            boolean existsGlobally = sqlRecordDbService.count(
+                    new LambdaQueryWrapper<SqlRecord>()
+                            .eq(SqlRecord::getProjectId, project.getId())
+                            .eq(SqlRecord::getSqlHash, sqlHash)
+                            .eq(SqlRecord::getStatus, 1)) > 0;
+
+            if (existsGlobally) {
+                updateLastScanId(project.getId(), sqlHash, batch.getId());
+                continue;
+            }
+
+            SqlRecord record = saveSqlRecord(newSql, sqlHash, project.getId(), batch.getId());
+            newCount++;
+
+            if (shouldInvokeAi(baseAiAnalyzedCount + aiAnalyzedCount)) {
+                AiAnalysisDetail aiDetail = aiSqlAnalyzer.analyze(sqlHash, newSql, project.getProjectName());
+                if (aiDetail != null) {
+                    saveAiAnalysisResult(record, batch.getId(), aiDetail);
+                    aiAnalyzedCount++;
+                    if (isHighRisk(aiDetail.assessment().riskLevel())) {
+                        riskCount++;
+                    }
+                }
+            }
+        }
+
+        for (String unchangedHash : comparison.unchangedHashes()) {
+            updateLastScanId(project.getId(), unchangedHash, batch.getId());
+        }
+
+        for (SqlRecord removed : comparison.removedRecords()) {
+            removed.setStatus(0);
+            removed.setUpdateTime(LocalDateTime.now());
+            sqlRecordDbService.updateById(removed);
+            removedCount++;
+        }
+
+        return new IncrementalProcessResult(newCount, removedCount, riskCount, aiAnalyzedCount);
+    }
+
+    // ==================== Multi-Source Scanning ====================
+
+    private List<ScannedSql> scanAllSources(Path projectRoot) {
+        List<ScannedSql> all = new ArrayList<>();
+        all.addAll(mapperXmlScanner.scan(projectRoot));
+        all.addAll(annotationSqlScanner.scan(projectRoot));
+        all.addAll(queryWrapperScanner.scan(projectRoot));
+        log.info("All scanners combined: {} SQL statements (XML={}, annotation={}, wrapper={})",
+                all.size(),
+                all.stream().filter(s -> s.sourceType() == com.zhuangjie.sentinel.pojo.enums.SqlSourceType.MAPPER_XML).count(),
+                all.stream().filter(s -> s.sourceType() == com.zhuangjie.sentinel.pojo.enums.SqlSourceType.ANNOTATION).count(),
+                all.stream().filter(s -> s.sourceType() == com.zhuangjie.sentinel.pojo.enums.SqlSourceType.QUERY_WRAPPER
+                        || s.sourceType() == com.zhuangjie.sentinel.pojo.enums.SqlSourceType.LAMBDA_WRAPPER).count());
+        return all;
+    }
+
     // ==================== Helper Methods ====================
 
-    private boolean shouldInvokeAi(int aiAnalyzedCount, boolean isHighRisk) {
-        if (!aiSqlAnalyzer.isAvailable() || !isHighRisk) {
+    private boolean shouldInvokeAi(int aiAnalyzedCount) {
+        if (!aiSqlAnalyzer.isAvailable()) {
             return false;
         }
         return maxAiCallsPerScan < 0 || aiAnalyzedCount < maxAiCallsPerScan;
+    }
+
+    private boolean isHighRisk(String riskLevel) {
+        if (riskLevel == null) return false;
+        return riskLevel.compareTo("P2") <= 0;
     }
 
     private int markRecordsAsRemoved(Long projectId, List<String> sourceFiles) {
@@ -333,27 +395,12 @@ public class ScanService {
         return record;
     }
 
-    private SqlAnalysis saveRuleAnalysisResult(SqlRecord record, Long batchId, AnalysisResult result) {
+    private SqlAnalysis saveAiAnalysisResult(SqlRecord record, Long batchId, AiAnalysisDetail aiDetail) {
+        SqlRiskAssessment ai = aiDetail.assessment();
+
         SqlAnalysis analysis = new SqlAnalysis();
         analysis.setSqlRecordId(record.getId());
         analysis.setScanBatchId(batchId);
-        analysis.setRuleRiskLevel(result.riskLevel().getCode());
-
-        List<String> issues = result.violations().stream()
-                .map(RuleViolation::message)
-                .toList();
-        analysis.setRuleIssues(JSONUtil.toJsonStr(issues));
-
-        analysis.setFinalRiskLevel(result.riskLevel().getCode());
-        analysis.setHandleStatus("PENDING");
-        analysis.setCreateTime(LocalDateTime.now());
-        sqlAnalysisDbService.save(analysis);
-        return analysis;
-    }
-
-    private void updateWithAiResult(SqlAnalysis analysis, AiAnalysisDetail aiDetail) {
-        SqlRiskAssessment ai = aiDetail.assessment();
-
         analysis.setAiRiskLevel(ai.riskLevel());
         analysis.setAiAnalysis(ai.explanation());
         analysis.setAiIndexSuggestion(JSONUtil.toJsonStr(ai.indexSuggestions()));
@@ -362,17 +409,11 @@ public class ScanService {
         analysis.setAiEstimatedExecTimeMs(ai.estimatedExecTimeMs());
         analysis.setAiModel(aiDetail.model());
         analysis.setAiTokensUsed(aiDetail.tokensUsed());
-
-        String finalLevel = higherRisk(analysis.getRuleRiskLevel(), ai.riskLevel());
-        analysis.setFinalRiskLevel(finalLevel);
-
-        sqlAnalysisDbService.updateById(analysis);
-    }
-
-    private String higherRisk(String a, String b) {
-        if (a == null) return b;
-        if (b == null) return a;
-        return a.compareTo(b) <= 0 ? a : b;
+        analysis.setFinalRiskLevel(ai.riskLevel());
+        analysis.setHandleStatus("ANALYZED");
+        analysis.setCreateTime(LocalDateTime.now());
+        sqlAnalysisDbService.save(analysis);
+        return analysis;
     }
 
     private static String abbrev(String hash) {

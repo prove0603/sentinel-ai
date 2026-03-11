@@ -44,6 +44,11 @@ alwaysApply: true
 ```
 sentinel-ai/
 ├── pom.xml                          # 父 POM
+├── table-meta/                      # 表结构 DDL 文件（P5 文件方案）
+│   └── collection-management/       # 按项目维度组织
+│       ├── t_case.sql               # 每张表一个 .sql 文件
+│       ├── t_case_cf.sql            # 含 -- Estimated Rows: N 头部 + SHOW CREATE TABLE 输出
+│       └── ...                      # 共 929 张表
 ├── sentinel-ai-server/              # Spring Boot 后端
 │   ├── pom.xml
 │   └── src/main/java/com/zhuangjie/sentinel/
@@ -52,51 +57,44 @@ sentinel-ai/
 │       │   ├── AiConfig.java
 │       │   ├── CacheConfig.java
 │       │   ├── MybatisPlusConfig.java
-│       │   ├── MybatisPlusMetaObjectHandler.java  ← P1 新增
+│       │   ├── MybatisPlusMetaObjectHandler.java
 │       │   └── WebConfig.java
 │       ├── common/                  # Result, PageResult 等
 │       ├── controller/              # REST API
 │       ├── service/                 # 业务逻辑
-│       ├── scanner/                 # SQL 提取引擎 ← P1 新增
-│       │   ├── SqlScanner.java              # 扫描器接口
+│       ├── scanner/                 # SQL 提取引擎 ← P1+P4
+│       │   ├── SqlScanner.java              # 扫描器接口 (scan + scanFiles)
 │       │   ├── MapperXmlScanner.java        # Mapper XML 扫描实现
+│       │   ├── AnnotationSqlScanner.java    # @Select/@Insert 等注解扫描 ← P4
+│       │   ├── QueryWrapperScanner.java     # QueryWrapper/LambdaQueryWrapper AST 分析 ← P4
+│       │   ├── JavaFileWalker.java          # Java 文件遍历工具 ← P4
 │       │   ├── DynamicSqlExpander.java      # 动态 SQL 展开
 │       │   └── SqlNormalizer.java           # SQL 标准化 + 哈希
-│       ├── analyzer/                # 规则引擎 + AI 分析 ← P1 新增
-│       │   ├── RuleBasedAnalyzer.java       # 规则引擎编排器
-│       │   ├── AnalysisResult.java          # 分析结果 record
-│       │   └── rules/              # 规则集 (sealed interface + record)
-│       │       ├── SqlRule.java             # sealed interface
-│       │       ├── RuleViolation.java       # 违规 record
-│       │       ├── FullTableScanRule.java
-│       │       ├── LikeLeadingWildcardRule.java
-│       │       ├── ImplicitConversionRule.java
-│       │       ├── LargeJoinRule.java
-│       │       ├── DeepPaginationRule.java
-│       │       └── NoConditionDynamicSqlRule.java
-│       ├── delta/                   # Git 增量检测 ← P3 已实现
-│       │   ├── GitDeltaDetector.java      # JGit 变更检测
-│       │   ├── DeltaResult.java           # Git diff 结果 record
-│       │   ├── SqlHashComparator.java     # SQL 哈希对比
-│       │   └── ComparisonResult.java      # 对比结果 record
-│       ├── knowledge/               # RAG 知识库 (P5)
+│       ├── analyzer/                # AI 分析（纯 AI 架构，无本地规则引擎）
+│       │   └── AiSqlAnalyzer.java           # AI 深度分析（含表结构上下文注入 + debug prompt 日志）
+│       ├── delta/                   # Git 增量检测 ← P3
+│       │   ├── GitDeltaDetector.java
+│       │   ├── DeltaResult.java
+│       │   ├── SqlHashComparator.java
+│       │   └── ComparisonResult.java
+│       ├── knowledge/               # 表结构知识库 ← P5（文件方案）
+│       │   ├── DdlExporter.java            # 独立命令行工具：从 MySQL 拉取 DDL 存为文件
+│       │   ├── TableMetaCollector.java      # JDBC 自动采集表结构（供 KnowledgeService 调用）
+│       │   ├── TableNameExtractor.java      # JSqlParser 提取 SQL 中引用的表名
+│       │   └── KnowledgeContextBuilder.java # 从 DDL 文件读取表结构 → 构建 AI Prompt 上下文
 │       ├── db/
-│       │   ├── entity/             # 实体类
-│       │   ├── mapper/             # Mapper 接口
-│       │   └── service/            # DB Service (ServiceImpl)
+│       │   ├── entity/
+│       │   ├── mapper/
+│       │   └── service/
 │       └── pojo/
-│           ├── dto/                # record DTO
-│           ├── vo/                 # record VO (P2+)
-│           └── enums/              # 枚举
+│           ├── dto/
+│           ├── vo/
+│           │   └── AnalysisDetailVo.java    # 分析详情 VO（含原 SQL、来源、表元数据 DDL）
+│           └── enums/
 ├── sentinel-ai-ui/                  # Vue 3 前端
 │   ├── package.json
-│   ├── vite.config.ts              # 代理 /api -> localhost:8090
+│   ├── vite.config.ts
 │   └── src/
-│       ├── views/                  # 页面组件
-│       ├── components/             # 公共组件
-│       ├── api/                    # API 封装 (axios)
-│       ├── router/                 # Vue Router
-│       └── styles/
 └── .cursor/rules/
 ```
 
@@ -104,51 +102,47 @@ sentinel-ai/
 
 ## 核心模块
 
-### Scanner (SQL 提取引擎) — ✅ P1 已实现
-- `SqlScanner` - 扫描器接口，定义 `scan(Path projectRoot)` 方法
+### Scanner (SQL 提取引擎) — ✅ P1 + P4 已实现
+- `SqlScanner` - 扫描器接口，定义 `scan(Path)` + `scanFiles(Path, List<Path>)` 方法
 - `MapperXmlScanner` - ✅ 解析 mapper.xml，递归遍历项目目录，提取 SQL，解析 `<sql>` 片段用于 `<include>` 引用
 - `DynamicSqlExpander` - ✅ 展开动态 SQL 的执行路径，支持双模式（ALL_TRUE/ALL_FALSE）
   - 处理: `<if>`, `<choose>/<when>/<otherwise>`, `<where>`, `<set>`, `<trim>`, `<foreach>`, `<include>`, `<bind>`
 - `SqlNormalizer` - ✅ SQL 标准化（替换 `#{}/${}` → `?`，归一化空白）+ SHA-256 哈希
-- `QueryWrapperScanner` - 🔲 P4 阶段：JavaParser AST 分析 QueryWrapper/LambdaQueryWrapper
-- `AnnotationSqlScanner` - 🔲 P4 阶段：扫描 @Select/@Insert 等注解 SQL
+- `AnnotationSqlScanner` - ✅ P4：JavaParser 解析 @Select/@Insert/@Update/@Delete 注解
+- `QueryWrapperScanner` - ✅ P4：JavaParser AST 分析 QueryWrapper/LambdaQueryWrapper
+- `JavaFileWalker` - ✅ P4：Java 文件递归遍历工具
 
-### Delta (增量检测) — ✅ P3 已实现
+### Delta (增量检测) — ✅ P3 + P4 已实现
 - `GitDeltaDetector` - ✅ JGit 获取 commit diff，检测 added/modified/deleted 文件
-  - `resolveHead(Path)` 解析当前 HEAD commit hash
-  - `detectChanges(Path, fromCommit, toCommit)` 返回 `DeltaResult`
-  - 支持 rename 和 copy 检测
-- `DeltaResult` - ✅ record 封装 diff 结果
-  - `changedMapperXmlFiles()` 过滤出变更的 mapper XML 文件
-  - `deletedMapperXmlFiles()` 过滤出已删除的 mapper XML 文件
-- `SqlHashComparator` - ✅ SQL 标准化后 hash 对比
-  - `compare(currentSqls, existingRecords)` 返回 `ComparisonResult`
-  - 分类为 new / unchanged / removed
+- `DeltaResult` - ✅ record 封装 diff 结果（含 XML 和 Java 文件过滤）
+- `SqlHashComparator` - ✅ SQL 标准化后 hash 对比，分类 new/unchanged/removed
 - `ComparisonResult` - ✅ record 封装对比结果
 
-### Analyzer (分析引擎) — ✅ P1 规则引擎 + P2 AI 分析已实现
-- `RuleBasedAnalyzer` - ✅ 规则引擎编排器（同步，毫秒级），JSqlParser 解析 SQL AST 后运行所有规则
-- `AnalysisResult` - ✅ 分析结果聚合 record（violations + 最终风险等级）
-- `AiSqlAnalyzer` - ✅ P2 已实现：Spring AI Alibaba 深度分析
-  - Prompt 工程：包含 SQL 文本/类型/来源/规则引擎发现，要求 JSON 结构化回复
-  - 结构化输出：AI 返回 JSON → Hutool 解析为 `SqlRiskAssessment` record
-  - Caffeine 缓存：以 sqlHash 为 key 缓存 AI 结果，避免重复分析
-  - 容错重试：最多 1 次重试，指数退避
-  - `AiAnalysisDetail` 内部 record 包装 assessment + model + tokensUsed
-- 规则集 (sealed interface `SqlRule` + record 实现):
-  - `FullTableScanRule` ✅ — SELECT/UPDATE/DELETE 无 WHERE → P0
-  - `LikeLeadingWildcardRule` ✅ — LIKE '%xxx' 或 CONCAT('%',...) → P1
-  - `ImplicitConversionRule` ✅ — WHERE 中对列使用函数包裹（YEAR/CAST/DATE_FORMAT 等）→ P2
-  - `LargeJoinRule` ✅ — ≥3 表 JOIN P2，≥5 表 P1
-  - `DeepPaginationRule` ✅ — OFFSET ≥1K P2，≥10K P1，≥100K P0
-  - `NoConditionDynamicSqlRule` ✅ — 动态 SQL 所有条件可能为空 → P0
+### Analyzer (分析引擎) — ✅ 纯 AI 架构（P1→P2→P5.1 演进）
+- **已移除本地规则引擎**（P5.1）：RuleBasedAnalyzer 及 6 条规则已删除
+  - 原因：AI + 表结构上下文后，规则引擎能发现的问题 AI 都能发现，且 AI 还能发现规则引擎无法检测的问题（如未索引列、隐式类型转换等）
+  - 规则引擎作为门控会导致未触发规则的 SQL 无法被 AI 分析，漏掉潜在慢 SQL
+- `AiSqlAnalyzer` - ✅ 所有 SQL 全量由 AI 分析（Caffeine 缓存 + `max-ai-calls-per-scan` 控制成本）
+  - Prompt 包含：SQL 信息 + 表结构 DDL（含索引、数据量）
+  - 输出：结构化 JSON（riskLevel, issues, indexSuggestions, rewriteSuggestions, explanation）
 
-### AI 集成 (Spring AI Alibaba) — ✅ P2 已实现
+### Knowledge (表结构知识库) — ✅ P5 已实现（文件方案）
+- **架构：** 文件方案取代 RAG/PGVector，零外部依赖
+- **目录结构：** `table-meta/{project-name}/{table_name}.sql`
+- **文件格式：** `-- Estimated Rows: N` 头部注释 + `SHOW CREATE TABLE` 完整输出（含索引）
+- `DdlExporter` - 独立命令行工具（`main()` 方法），连接 MySQL 数据库，对每张表执行 `SHOW CREATE TABLE` + 查询 `INFORMATION_SCHEMA.TABLES` 获取行数，存为 .sql 文件
+- `TableMetaCollector` - 供 `KnowledgeService` 调用的 JDBC 采集组件
+- `TableNameExtractor` - JSqlParser 从 SQL 中提取所有引用表名（含 JOIN/子查询/DML）
+- `KnowledgeContextBuilder` - 从 DDL 文件读取表结构 → 格式化为 AI Prompt 上下文
+  - 提取 SQL 中的表名 → 查找对应 .sql 文件 → 读取内容 → 解析行数 → 构建上下文
+- `KnowledgeService` - 编排采集→存文件流程
+- AI Prompt 注入：`AiSqlAnalyzer` 调用 `KnowledgeContextBuilder.buildContext(sql, projectName)` 获取表结构上下文
+
+### AI 集成 (Spring AI Alibaba) — ✅ P2 + P5
 - 使用 `spring-ai-alibaba-starter-dashscope` 对接通义千问
-- `ChatClient` + system prompt（资深 MySQL DBA 角色）
-- `AiConfig` 用 `@ConditionalOnProperty(sentinel.ai.enabled=true)` 控制 ChatClient 创建
-- AI 调用策略：规则前置过滤（仅 P0/P1/P2）→ Caffeine 缓存 → AI 调用 → JSON 解析 → 更新分析记录
-- 结果写入 `t_sql_analysis` 的 ai_* 字段，finalRiskLevel 取规则+AI 中更严重的等级
+- `AiConfig` 用 `@ConditionalOnProperty(sentinel.ai.enabled=true)` 控制
+- AI 调用策略：全量 SQL → Caffeine 缓存 → 注入表结构上下文 → AI 调用 → JSON 结构化输出（`max-ai-calls-per-scan` 控制成本）
+- 结果写入 `t_sql_analysis` 的 ai_* 字段（rule_* 字段不再写入）
 
 ---
 
@@ -156,7 +150,7 @@ sentinel-ai/
 
 ```
 t_project_config   -- 项目配置
-t_table_meta       -- 表结构元数据
+t_table_meta       -- 表结构元数据（历史遗留，文件方案后不再核心依赖）
 t_sql_record       -- SQL 记录
 t_scan_batch       -- 扫描批次
 t_sql_analysis     -- 分析结果
@@ -170,6 +164,7 @@ t_sql_analysis     -- 分析结果
 - `/api/scan/*` - 扫描触发/历史
 - `/api/analysis/*` - 分析结果
 - `/api/dashboard/*` - 仪表盘
+- `/api/table-meta/*` - 表结构元数据管理
 
 ---
 
@@ -178,45 +173,71 @@ t_sql_analysis     -- 分析结果
 - 代码结构：controller → service → db.service → mapper
 - 统一响应：`Result<T>` 和 `PageResult<T>`
 - 虚拟线程：`spring.threads.virtual.enabled=true`
-- Java 21 特性：
-  - `record` 用于 DTO/VO/AI 结构化输出
-  - `sealed interface` + `record` 用于规则类体系
-  - `pattern matching for switch` 用于类型分发
-  - 文本块 (`"""`) 用于 AI Prompt 模板
-- AI 调用缓存：Caffeine (key = sql_hash + table_meta_hash)
+- Java 21 特性：record, sealed interface, pattern matching, 文本块
+- AI 调用缓存：Caffeine (key = sql_hash)
+- 表结构知识：文件方案 `table-meta/{project-name}/{table}.sql`
 - 开发环境用 H2 数据库 (文件模式)，生产用 MySQL
 - 前端开发代理：Vite `proxy /api -> http://localhost:8090`
-- 前端 build 输出到 `sentinel-ai-server/src/main/resources/static/`
+- **开发调试开关：**
+  - `sentinel.dev.max-sql-per-scan` — 限制单次扫描处理的 SQL 数量（默认 -1 不限，dev 环境设为 10）
+  - `sentinel.ai.max-ai-calls-per-scan` — 限制单次扫描调用 AI 的次数（默认 -1 不限，dev 环境设为 10）
+  - 生产环境不设这两个值或设为 -1 即为不限制
+- **AI 分析状态流转：** ANALYZED（AI已分析）→ CONFIRMED / FIXED / IGNORED / FALSE_POSITIVE
+- **AI 调用方式：** Spring AI Alibaba Starter → 内置 DashScope SDK → DashScope 原生 API（非 OpenAI 兼容模式）
+  - 模型 `qwen-plus` 可用；`qwen3.5-plus` 需多模态接口，当前 Starter 不支持
+- **分析详情 API：** `/api/analysis/{id}` 返回 `AnalysisDetailVo`，包含原 SQL、来源文件、表结构 DDL 上下文
+
+---
+
+## DdlExporter 使用方法
+
+```bash
+# 通过 Maven 运行（项目根目录下执行）
+mvn exec:java -pl sentinel-ai-server \
+  -Dexec.mainClass=com.zhuangjie.sentinel.knowledge.DdlExporter \
+  "-Dexec.args=jdbc:mysql://host:3306/db?user=xxx&password=yyy table-meta/project-name"
+```
+
+输出目录按项目维度组织：
+```
+table-meta/
+└── collection-management/   # 929 张表的 DDL 文件
+    ├── t_case.sql
+    ├── t_case_cf.sql
+    └── ...
+```
 
 ---
 
 ## 实施路线图
 
-- **P1（MVP）：** XML Mapper 扫描 + 规则引擎 + 基础 WebUI ← **✅ 已完成并验证**
-  - ✅ MapperXmlScanner + DynamicSqlExpander + SqlNormalizer
-  - ✅ RuleBasedAnalyzer + 6 条规则（sealed interface + record）
-  - ✅ ScanService 完整扫描→分析→持久化流程
-  - ✅ MybatisPlusMetaObjectHandler 自动填充时间
-  - ✅ 已用真实项目验证全量扫描
-- **P2：** Spring AI Alibaba 集成 + Prompt 工程 + 结构化输出 ← **✅ 已完成并验证**
-  - ✅ AiSqlAnalyzer — Prompt 工程 + JSON 结构化输出 + Caffeine 缓存 + 容错重试
-  - ✅ AiConfig — @ConditionalOnProperty 控制 AI 开关
-  - ✅ ScanService 串联：规则引擎 → AI 深度分析（仅 P0/P1/P2） → 结果回写
-  - ✅ 配置：sentinel.ai.enabled + AI_DASHSCOPE_API_KEY 环境变量
-  - ✅ 模型名称修正：使用 `qwen-plus`（非 qwen3.5-plus）
-  - ✅ 已通过端到端测试验证 AI 分析功能
+- **P1（MVP）：** XML Mapper 扫描 + 规则引擎 + 基础 WebUI ← **✅ 已完成**
+- **P2：** Spring AI Alibaba 集成 + Prompt 工程 + 结构化输出 ← **✅ 已完成**
 - **P3：** JGit 增量扫描 ← **✅ 已完成**
-  - ✅ GitDeltaDetector — JGit diff 检测变更文件（add/modify/delete/rename/copy）
-  - ✅ DeltaResult — 封装 diff 结果，过滤 mapper XML 文件
-  - ✅ SqlHashComparator — SQL 哈希对比，分类 new/unchanged/removed
-  - ✅ MapperXmlScanner.scanFiles() — 支持扫描指定文件列表（增量模式）
-  - ✅ ScanService 重构：doFullScan() + doIncrementalScan() 双模式
-  - ✅ ScanController 支持 forceFullScan 参数
-  - ✅ 增量扫描流程：Git diff → 过滤 mapper XML → 对比哈希 → 仅分析新 SQL → 标记已删除 SQL
-  - ✅ 全量扫描后自动记录 HEAD commit，后续自动走增量
-- **P4：** JavaParser 解析 QueryWrapper/LambdaQueryWrapper
-- **P5：** RAG 知识库
-- **P6：** 完善 Dashboard、通知、导出报告、开源准备
+- **P4：** JavaParser 解析 QueryWrapper/注解 SQL ← **✅ 已完成**
+- **P5：** 表结构知识库（文件方案） ← **✅ 已完成**
+  - ✅ 去掉 PGVector/PostgreSQL 依赖，改用文件存储表结构 DDL
+  - ✅ DdlExporter — 独立命令行工具，JDBC 连接 MySQL 拉取 SHOW CREATE TABLE + 行数估算
+  - ✅ KnowledgeContextBuilder — 从 DDL 文件读取表结构，构建 AI Prompt 上下文（含分表智能匹配）
+  - ✅ AiSqlAnalyzer — Prompt 注入表结构（DDL + 索引 + 数据量），精准分析
+  - ✅ 已导出 collection_data_dev 库表的 DDL（清理后 406 张业务表）
+- **P5.1：** 移除本地规则引擎，全量 AI 分析 ← **✅ 已完成**
+  - ✅ 删除 RuleBasedAnalyzer、AnalysisResult、rules/ 包下 6 条规则
+  - ✅ ScanService 改为：所有 SQL → AI 分析（Caffeine 缓存避免重复调用）
+  - ✅ AiSqlAnalyzer 简化：去掉 ruleResult 参数，Prompt 不再包含"规则引擎已发现的问题"
+  - ✅ 风险等级完全由 AI 判定，riskCount 统计 P0/P1/P2
+- **P5.2：** 前后端优化 ← **✅ 已完成**
+  - ✅ 分析状态：AI 分析完成后 handleStatus 设为 `ANALYZED`（而非 PENDING）
+  - ✅ 详情接口 AnalysisDetailVo：关联 SqlRecord，返回原 SQL、来源文件、表结构 DDL 上下文
+  - ✅ 前端详情页：展示 SQL 来源信息、原始 SQL、标准化 SQL、AI 报告、索引建议、重写建议、表结构 DDL
+  - ✅ 前端列表页：去掉已废弃的"规则判定"列，新增"预估扫描行数"，状态中文化
+  - ✅ AiSqlAnalyzer 增加 debug 日志：打印 tableContext 匹配结果和完整 prompt
+  - ✅ logback-spring.xml：Console UTF-8 编码 + dev profile DEBUG 级别
+  - ✅ launch.json + settings.json：JVM UTF-8 编码参数 + 终端 chcp 65001
+- **P6：** RAG 业务知识库（保留规划）
+  - 用 RAG/向量数据库存储业务知识（SQL 业务背景、调用量、已知慢查询说明等）
+  - 与 P5 文件方案互补：文件存表结构（确定性），RAG 存业务知识（语义检索）
+- **P7：** 完善 Dashboard、通知、导出报告、开源准备
 
 ---
 
@@ -227,7 +248,10 @@ t_sql_analysis     -- 分析结果
 - **后端端口：** 8090
 - **前端开发端口：** 5173（`npm run dev` in sentinel-ai-ui）
 - **H2 控制台：** http://localhost:8090/h2-console（dev 环境）
-- **数据库文件：** `./data/sentinel-ai.mv.db`（H2 文件模式，运行目录下自动创建）
+- **数据库文件：** `./data/sentinel-ai.mv.db`（H2 文件模式）
+- **表结构 DDL 目录：** `table-meta/collection-management/`（清理后 406 张业务表）
+- **launch.json：** 含 JVM UTF-8 参数 + `integratedTerminal` console 模式 + API Key 环境变量
+- **settings.json：** 终端自动 `chcp 65001`（UTF-8）+ java.debug.settings.vmArgs
 
 ---
 
@@ -237,3 +261,5 @@ t_sql_analysis     -- 分析结果
 - 项目名 sentinel-ai，不包含公司相关标识
 - 代码和注释中不涉及公司内部信息
 - 新对话框中可用 `@sentinel-ai-project` 引用此规则文件获取完整项目上下文
+- **模型限制：** `qwen3.5-plus` 系列需多模态 API（`MultiModalConversation`），当前 `spring-ai-alibaba-starter-dashscope` 使用文本生成 API，不支持此模型，仅支持 `qwen-plus` / `qwen-max` 等文本模型
+- **日志编码：** Windows 环境需 `logback-spring.xml` 设 charset=UTF-8 + JVM 参数 `-Dsun.stdout.encoding=UTF-8`；通过 F5/launch.json 启动应用以确保参数生效

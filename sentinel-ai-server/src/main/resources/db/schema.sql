@@ -13,11 +13,13 @@ CREATE TABLE IF NOT EXISTS t_project_config (
 
 CREATE TABLE IF NOT EXISTS t_table_meta (
     id              BIGINT AUTO_INCREMENT PRIMARY KEY,
+    project_id      BIGINT,
     table_name      VARCHAR(128) NOT NULL,
     ddl_text        CLOB,
     estimated_rows  BIGINT DEFAULT 0,
     avg_row_length  INT DEFAULT 0,
     index_info      CLOB,
+    create_time     DATETIME DEFAULT CURRENT_TIMESTAMP,
     update_time     DATETIME DEFAULT CURRENT_TIMESTAMP
 );
 

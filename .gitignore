@@ -48,6 +48,9 @@ logs/
 ### H2 database files ###
 data/
 
+### Table metadata DDL files (exported from target DB, contains sensitive schema info) ###
+table-meta/
+
 ### Cursor IDE - only ignore personal/local settings, keep rules for project context ###
 .cursor/mcp.json
 .cursor/settings.json

@@ -36,9 +36,7 @@ public class MapperXmlScanner implements SqlScanner {
         return parseMapperXmlFiles(projectRoot, xmlFiles);
     }
 
-    /**
-     * Scans only specific mapper XML files (used for incremental scanning).
-     */
+    @Override
     public List<ScannedSql> scanFiles(Path projectRoot, List<Path> xmlFiles) {
         log.info("Scanning {} specific mapper XML files", xmlFiles.size());
         return parseMapperXmlFiles(projectRoot, xmlFiles);

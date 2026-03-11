@@ -14,7 +14,7 @@
       </el-form-item>
       <el-form-item label="处理状态">
         <el-select v-model="filters.handleStatus" clearable placeholder="全部">
-          <el-option label="待处理" value="PENDING" />
+          <el-option label="AI已分析" value="ANALYZED" />
           <el-option label="已确认" value="CONFIRMED" />
           <el-option label="已修复" value="FIXED" />
           <el-option label="已忽略" value="IGNORED" />
@@ -35,12 +35,12 @@
           </el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="ruleRiskLevel" label="规则判定" width="100" />
       <el-table-column prop="aiRiskLevel" label="AI 判定" width="100" />
       <el-table-column prop="aiEstimatedExecTimeMs" label="预估耗时(ms)" width="120" />
-      <el-table-column prop="handleStatus" label="状态" width="100">
+      <el-table-column prop="aiEstimatedScanRows" label="预估扫描行数" width="130" />
+      <el-table-column prop="handleStatus" label="状态" width="110">
         <template #default="{ row }">
-          <el-tag size="small">{{ row.handleStatus }}</el-tag>
+          <el-tag :type="statusTagType(row.handleStatus)" size="small">{{ statusLabel(row.handleStatus) }}</el-tag>
         </template>
       </el-table-column>
       <el-table-column prop="createTime" label="分析时间" width="180" />
@@ -60,23 +60,48 @@
       style="margin-top: 16px"
     />
 
-    <el-drawer v-model="drawerVisible" title="SQL 分析详情" size="60%">
+    <el-drawer v-model="drawerVisible" title="SQL 分析详情" size="65%">
       <template v-if="currentDetail">
+        <h4>SQL 来源</h4>
+        <el-descriptions :column="1" border size="small">
+          <el-descriptions-item label="文件路径">
+            <code>{{ currentDetail.sourceFile ?? '-' }}</code>
+          </el-descriptions-item>
+          <el-descriptions-item label="定位">
+            <code>{{ currentDetail.sourceLocation ?? '-' }}</code>
+          </el-descriptions-item>
+          <el-descriptions-item label="SQL 类型">{{ currentDetail.sqlType ?? '-' }}</el-descriptions-item>
+          <el-descriptions-item label="来源类型">{{ currentDetail.sourceType ?? '-' }}</el-descriptions-item>
+        </el-descriptions>
+
+        <h4>原始 SQL</h4>
+        <el-card shadow="never">
+          <pre class="sql-block">{{ currentDetail.sqlText ?? '暂无' }}</pre>
+        </el-card>
+
+        <h4>标准化 SQL</h4>
+        <el-card shadow="never">
+          <pre class="sql-block">{{ currentDetail.sqlNormalized ?? '暂无' }}</pre>
+        </el-card>
+
         <h4>AI 分析报告</h4>
         <el-card shadow="never">
-          <pre class="ai-report">{{ currentDetail.aiAnalysis ?? '暂无 AI 分析' }}</pre>
+          <pre class="ai-report">{{ currentDetail.analysis?.aiAnalysis ?? '暂无 AI 分析' }}</pre>
         </el-card>
+
         <h4>索引建议</h4>
         <el-card shadow="never">
-          <pre>{{ currentDetail.aiIndexSuggestion ?? '暂无' }}</pre>
+          <pre class="sql-block">{{ formatJson(currentDetail.analysis?.aiIndexSuggestion) }}</pre>
         </el-card>
+
         <h4>SQL 重写建议</h4>
         <el-card shadow="never">
-          <pre>{{ currentDetail.aiRewriteSuggestion ?? '暂无' }}</pre>
+          <pre class="sql-block">{{ formatJson(currentDetail.analysis?.aiRewriteSuggestion) }}</pre>
         </el-card>
-        <h4>规则引擎发现的问题</h4>
+
+        <h4>表结构元数据（DDL）</h4>
         <el-card shadow="never">
-          <pre>{{ currentDetail.ruleIssues ?? '暂无' }}</pre>
+          <pre class="sql-block">{{ currentDetail.tableMetaContext ?? '未匹配到表结构文件' }}</pre>
         </el-card>
       </template>
     </el-drawer>
@@ -102,6 +127,42 @@ const riskTagType = (level: string) => {
     case 'P3': return 'info'
     case 'P4': return 'success'
     default: return 'info'
+  }
+}
+
+const statusTagType = (status: string) => {
+  switch (status) {
+    case 'ANALYZED': return 'warning'
+    case 'CONFIRMED': return ''
+    case 'FIXED': return 'success'
+    case 'IGNORED': return 'info'
+    case 'FALSE_POSITIVE': return 'info'
+    default: return 'warning'
+  }
+}
+
+const statusLabel = (status: string) => {
+  switch (status) {
+    case 'ANALYZED': return 'AI已分析'
+    case 'PENDING': return '待处理'
+    case 'CONFIRMED': return '已确认'
+    case 'FIXED': return '已修复'
+    case 'IGNORED': return '已忽略'
+    case 'FALSE_POSITIVE': return '误报'
+    default: return status
+  }
+}
+
+const formatJson = (jsonStr: string | null) => {
+  if (!jsonStr) return '暂无'
+  try {
+    const arr = JSON.parse(jsonStr)
+    if (Array.isArray(arr)) {
+      return arr.join('\n\n')
+    }
+    return jsonStr
+  } catch {
+    return jsonStr
   }
 }
 
@@ -140,5 +201,16 @@ onMounted(loadData)
   word-wrap: break-word;
   font-size: 14px;
   line-height: 1.6;
+}
+.sql-block {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-size: 13px;
+  line-height: 1.5;
+  font-family: 'Cascadia Code', 'Fira Code', Consolas, monospace;
+}
+h4 {
+  margin-top: 20px;
+  margin-bottom: 8px;
 }
 </style>

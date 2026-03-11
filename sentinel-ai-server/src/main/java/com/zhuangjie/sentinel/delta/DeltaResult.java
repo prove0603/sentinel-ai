@@ -33,6 +33,19 @@ public record DeltaResult(
                 .toList();
     }
 
+    public List<String> changedJavaFiles() {
+        return Stream.concat(addedFiles.stream(), modifiedFiles.stream())
+                .filter(f -> f.endsWith(".java"))
+                .filter(f -> !f.contains("/test/"))
+                .toList();
+    }
+
+    public List<String> deletedJavaFiles() {
+        return deletedFiles.stream()
+                .filter(f -> f.endsWith(".java"))
+                .toList();
+    }
+
     public boolean hasChanges() {
         return !addedFiles.isEmpty() || !modifiedFiles.isEmpty() || !deletedFiles.isEmpty();
     }

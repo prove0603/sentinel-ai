@@ -3,6 +3,7 @@ package com.zhuangjie.sentinel.controller;
 import com.zhuangjie.sentinel.common.PageResult;
 import com.zhuangjie.sentinel.common.Result;
 import com.zhuangjie.sentinel.db.entity.SqlAnalysis;
+import com.zhuangjie.sentinel.pojo.vo.AnalysisDetailVo;
 import com.zhuangjie.sentinel.service.AnalysisService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.web.bind.annotation.*;
@@ -32,7 +33,7 @@ public class AnalysisController {
     }
 
     @GetMapping("/{id}")
-    public Result<SqlAnalysis> detail(@PathVariable Long id) {
+    public Result<AnalysisDetailVo> detail(@PathVariable Long id) {
         return Result.ok(analysisService.getDetail(id));
     }
 

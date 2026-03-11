@@ -25,8 +25,8 @@ alwaysApply: true
 |------|------|------|
 | Java | Java 21 LTS | 21 |
 | 后端框架 | Spring Boot | 3.4.3 |
-| AI 框架 | Spring AI Alibaba (DashScope) | 1.1.2.1 |
-| AI 模型 | 通义千问 Qwen-Plus / Qwen-Max | - |
+| AI SDK | DashScope SDK (MultiModalConversation) | 2.22.7 |
+| AI 模型 | 通义千问 Qwen3.5-Plus / Qwen-Plus / Qwen-Max | - |
 | ORM | MyBatis-Plus | 3.5.7 |
 | SQL 解析 | JSqlParser | 5.0 |
 | Java 源码 AST | JavaParser | 3.26.2 |
@@ -54,7 +54,7 @@ sentinel-ai/
 │   └── src/main/java/com/zhuangjie/sentinel/
 │       ├── SentinelAiApplication.java
 │       ├── config/                  # 配置类
-│       │   ├── AiConfig.java
+│       │   ├── AiConfig.java        # DashScope MultiModalConversation Bean
 │       │   ├── CacheConfig.java
 │       │   ├── MybatisPlusConfig.java
 │       │   ├── MybatisPlusMetaObjectHandler.java
@@ -71,7 +71,7 @@ sentinel-ai/
 │       │   ├── DynamicSqlExpander.java      # 动态 SQL 展开
 │       │   └── SqlNormalizer.java           # SQL 标准化 + 哈希
 │       ├── analyzer/                # AI 分析（纯 AI 架构，无本地规则引擎）
-│       │   └── AiSqlAnalyzer.java           # AI 深度分析（含表结构上下文注入 + debug prompt 日志）
+│       │   └── AiSqlAnalyzer.java           # DashScope MultiModalConversation API 调用
 │       ├── delta/                   # Git 增量检测 ← P3
 │       │   ├── GitDeltaDetector.java
 │       │   ├── DeltaResult.java
@@ -89,7 +89,7 @@ sentinel-ai/
 │       └── pojo/
 │           ├── dto/
 │           ├── vo/
-│           │   └── AnalysisDetailVo.java    # 分析详情 VO（含原 SQL、来源、表元数据 DDL）
+│           │   └── AnalysisDetailVo.java    # 分析详情 VO（含原 SQL、来源、项目名、表元数据 DDL）
 │           └── enums/
 ├── sentinel-ai-ui/                  # Vue 3 前端
 │   ├── package.json
@@ -118,11 +118,14 @@ sentinel-ai/
 - `SqlHashComparator` - ✅ SQL 标准化后 hash 对比，分类 new/unchanged/removed
 - `ComparisonResult` - ✅ record 封装对比结果
 
-### Analyzer (分析引擎) — ✅ 纯 AI 架构（P1→P2→P5.1 演进）
+### Analyzer (分析引擎) — ✅ 纯 AI 架构（P1→P2→P5.1→P5.3 演进）
 - **已移除本地规则引擎**（P5.1）：RuleBasedAnalyzer 及 6 条规则已删除
-  - 原因：AI + 表结构上下文后，规则引擎能发现的问题 AI 都能发现，且 AI 还能发现规则引擎无法检测的问题（如未索引列、隐式类型转换等）
-  - 规则引擎作为门控会导致未触发规则的 SQL 无法被 AI 分析，漏掉潜在慢 SQL
+- **已移除 Spring AI Alibaba**（P5.3）：改用 DashScope SDK 原生 MultiModalConversation API
+  - 原因：Spring AI Alibaba Starter 使用文本生成 API，不支持 qwen3.5-plus 等多模态模型
+  - DashScope SDK 的 MultiModalConversation 接口支持所有新模型
 - `AiSqlAnalyzer` - ✅ 所有 SQL 全量由 AI 分析（Caffeine 缓存 + `max-ai-calls-per-scan` 控制成本）
+  - 使用 `MultiModalConversation.call()` 替代 `ChatClient.prompt()`
+  - 支持 System + User 消息结构
   - Prompt 包含：SQL 信息 + 表结构 DDL（含索引、数据量）
   - 输出：结构化 JSON（riskLevel, issues, indexSuggestions, rewriteSuggestions, explanation）
 
@@ -138,11 +141,14 @@ sentinel-ai/
 - `KnowledgeService` - 编排采集→存文件流程
 - AI Prompt 注入：`AiSqlAnalyzer` 调用 `KnowledgeContextBuilder.buildContext(sql, projectName)` 获取表结构上下文
 
-### AI 集成 (Spring AI Alibaba) — ✅ P2 + P5
-- 使用 `spring-ai-alibaba-starter-dashscope` 对接通义千问
-- `AiConfig` 用 `@ConditionalOnProperty(sentinel.ai.enabled=true)` 控制
+### AI 集成 (DashScope SDK) — ✅ P2 + P5 + P5.3
+- **已迁移至 DashScope SDK 原生 API**（P5.3），使用 `MultiModalConversation` 接口
+  - 支持 `qwen3.5-plus`、`qwen-plus`、`qwen-max` 等所有模型
+  - `AiConfig` 创建 `MultiModalConversation` Bean（`@ConditionalOnProperty(sentinel.ai.enabled=true)`）
+  - `AiSqlAnalyzer` 使用 `MultiModalConversationParam` 构建请求，包含 System + User 消息
+  - API Key 通过 `sentinel.ai.api-key` 配置或环境变量 `AI_DASHSCOPE_API_KEY` 注入
 - AI 调用策略：全量 SQL → Caffeine 缓存 → 注入表结构上下文 → AI 调用 → JSON 结构化输出（`max-ai-calls-per-scan` 控制成本）
-- 结果写入 `t_sql_analysis` 的 ai_* 字段（rule_* 字段不再写入）
+- 结果写入 `t_sql_analysis` 的 ai_* 字段
 
 ---
 
@@ -151,9 +157,9 @@ sentinel-ai/
 ```
 t_project_config   -- 项目配置
 t_table_meta       -- 表结构元数据（历史遗留，文件方案后不再核心依赖）
-t_sql_record       -- SQL 记录
+t_sql_record       -- SQL 记录（含 project_id）
 t_scan_batch       -- 扫描批次
-t_sql_analysis     -- 分析结果
+t_sql_analysis     -- 分析结果（通过 sql_record_id 关联 project_id）
 ```
 
 ---
@@ -163,6 +169,9 @@ t_sql_analysis     -- 分析结果
 - `/api/project/*` - 项目管理
 - `/api/scan/*` - 扫描触发/历史
 - `/api/analysis/*` - 分析结果
+  - `GET /api/analysis/page` - 分页查询，支持 projectId、riskLevel、handleStatus、startTime、endTime 筛选
+  - `GET /api/analysis/{id}` - 详情（含 projectName）
+  - `PUT /api/analysis/{id}/handle` - 修改处理状态（支持 status、note、handler）
 - `/api/dashboard/*` - 仪表盘
 - `/api/table-meta/*` - 表结构元数据管理
 
@@ -179,13 +188,15 @@ t_sql_analysis     -- 分析结果
 - 开发环境用 H2 数据库 (文件模式)，生产用 MySQL
 - 前端开发代理：Vite `proxy /api -> http://localhost:8090`
 - **开发调试开关：**
-  - `sentinel.dev.max-sql-per-scan` — 限制单次扫描处理的 SQL 数量（默认 -1 不限，dev 环境设为 10）
-  - `sentinel.ai.max-ai-calls-per-scan` — 限制单次扫描调用 AI 的次数（默认 -1 不限，dev 环境设为 10）
+  - `sentinel.dev.max-sql-per-scan` — 限制单次扫描处理的 SQL 数量（默认 -1 不限，dev 环境设为 50）
+  - `sentinel.ai.max-ai-calls-per-scan` — 限制单次扫描调用 AI 的次数（默认 -1 不限，dev 环境设为 50）
   - 生产环境不设这两个值或设为 -1 即为不限制
 - **AI 分析状态流转：** ANALYZED（AI已分析）→ CONFIRMED / FIXED / IGNORED / FALSE_POSITIVE
-- **AI 调用方式：** Spring AI Alibaba Starter → 内置 DashScope SDK → DashScope 原生 API（非 OpenAI 兼容模式）
-  - 模型 `qwen-plus` 可用；`qwen3.5-plus` 需多模态接口，当前 Starter 不支持
-- **分析详情 API：** `/api/analysis/{id}` 返回 `AnalysisDetailVo`，包含原 SQL、来源文件、表结构 DDL 上下文
+- **AI 调用方式：** DashScope SDK → `MultiModalConversation.call()` → DashScope 原生多模态 API
+  - 支持模型：`qwen3.5-plus`（默认）、`qwen-plus`、`qwen-max` 等
+  - API Key 配置：`sentinel.ai.api-key` 或环境变量 `AI_DASHSCOPE_API_KEY`
+- **分析详情 API：** `/api/analysis/{id}` 返回 `AnalysisDetailVo`，包含原 SQL、来源文件、项目名、表结构 DDL 上下文
+- **分析列表筛选：** 支持按项目、风险等级、处理状态、分析时间范围筛选，默认按分析时间逆序
 
 ---
 
@@ -234,6 +245,17 @@ table-meta/
   - ✅ AiSqlAnalyzer 增加 debug 日志：打印 tableContext 匹配结果和完整 prompt
   - ✅ logback-spring.xml：Console UTF-8 编码 + dev profile DEBUG 级别
   - ✅ launch.json + settings.json：JVM UTF-8 编码参数 + 终端 chcp 65001
+- **P5.3：** DashScope SDK 迁移 + 分析页面增强 ← **✅ 已完成**
+  - ✅ 移除 spring-ai-alibaba-starter-dashscope 依赖，改用 dashscope-sdk-java 2.22.7
+  - ✅ AiSqlAnalyzer 改用 `MultiModalConversation` API，支持 `qwen3.5-plus` 等新模型
+  - ✅ AiConfig 简化：创建 `MultiModalConversation` Bean
+  - ✅ 前端分析列表：新增按所属项目筛选（项目下拉框）
+  - ✅ 前端分析列表：新增分析时间范围筛选（日期选择器 + 快捷选项），默认按时间逆序
+  - ✅ 前端详情页：新增状态修改按钮组（AI已分析/已确认/已修复/已忽略/误报），支持填写备注
+  - ✅ 后端 AnalysisController：新增 projectId、startTime、endTime 查询参数
+  - ✅ 后端 AnalysisService：支持按项目 ID 关联 SqlRecord 筛选、按时间范围筛选
+  - ✅ AnalysisDetailVo：新增 projectName 字段
+  - ✅ updateHandleStatus 自动记录 handleTime
 - **P6：** RAG 业务知识库（保留规划）
   - 用 RAG/向量数据库存储业务知识（SQL 业务背景、调用量、已知慢查询说明等）
   - 与 P5 文件方案互补：文件存表结构（确定性），RAG 存业务知识（语义检索）
@@ -261,5 +283,7 @@ table-meta/
 - 项目名 sentinel-ai，不包含公司相关标识
 - 代码和注释中不涉及公司内部信息
 - 新对话框中可用 `@sentinel-ai-project` 引用此规则文件获取完整项目上下文
-- **模型限制：** `qwen3.5-plus` 系列需多模态 API（`MultiModalConversation`），当前 `spring-ai-alibaba-starter-dashscope` 使用文本生成 API，不支持此模型，仅支持 `qwen-plus` / `qwen-max` 等文本模型
+- **AI SDK：** 已从 `spring-ai-alibaba-starter-dashscope` 迁移至 `dashscope-sdk-java`（DashScope 原生 SDK）
+  - 使用 `MultiModalConversation` 接口，支持 `qwen3.5-plus` 等所有新模型
+  - 不再依赖 Spring AI 框架，减少依赖链和版本冲突
 - **日志编码：** Windows 环境需 `logback-spring.xml` 设 charset=UTF-8 + JVM 参数 `-Dsun.stdout.encoding=UTF-8`；通过 F5/launch.json 启动应用以确保参数生效

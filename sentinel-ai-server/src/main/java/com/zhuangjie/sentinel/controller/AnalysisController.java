@@ -6,7 +6,10 @@ import com.zhuangjie.sentinel.db.entity.SqlAnalysis;
 import com.zhuangjie.sentinel.pojo.vo.AnalysisDetailVo;
 import com.zhuangjie.sentinel.service.AnalysisService;
 import lombok.RequiredArgsConstructor;
+import org.springframework.format.annotation.DateTimeFormat;
 import org.springframework.web.bind.annotation.*;
+
+import java.time.LocalDateTime;
 
 @RestController
 @RequestMapping("/api/analysis")
@@ -17,11 +20,15 @@ public class AnalysisController {
 
     @GetMapping("/page")
     public Result<PageResult<SqlAnalysis>> page(
+            @RequestParam(required = false) Long projectId,
             @RequestParam(required = false) String riskLevel,
             @RequestParam(required = false) String handleStatus,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime startTime,
+            @RequestParam(required = false) @DateTimeFormat(iso = DateTimeFormat.ISO.DATE_TIME) LocalDateTime endTime,
             @RequestParam(defaultValue = "1") int current,
             @RequestParam(defaultValue = "10") int size) {
-        return Result.ok(PageResult.of(analysisService.pageByRisk(riskLevel, handleStatus, current, size)));
+        return Result.ok(PageResult.of(
+                analysisService.pageByCondition(projectId, riskLevel, handleStatus, startTime, endTime, current, size)));
     }
 
     @GetMapping("/batch/{batchId}")

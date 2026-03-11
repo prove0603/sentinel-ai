@@ -3,6 +3,16 @@
     <h2>SQL 分析结果</h2>
 
     <el-form inline class="filter-form">
+      <el-form-item label="所属项目">
+        <el-select v-model="filters.projectId" clearable placeholder="全部项目" @change="loadData">
+          <el-option
+            v-for="p in projects"
+            :key="p.id"
+            :label="p.projectName"
+            :value="p.id"
+          />
+        </el-select>
+      </el-form-item>
       <el-form-item label="风险等级">
         <el-select v-model="filters.riskLevel" clearable placeholder="全部">
           <el-option label="P0 - 紧急" value="P0" />
@@ -21,8 +31,20 @@
           <el-option label="误报" value="FALSE_POSITIVE" />
         </el-select>
       </el-form-item>
+      <el-form-item label="分析时间">
+        <el-date-picker
+          v-model="filters.timeRange"
+          type="datetimerange"
+          range-separator="至"
+          start-placeholder="开始时间"
+          end-placeholder="结束时间"
+          value-format="YYYY-MM-DDTHH:mm:ss"
+          :shortcuts="timeShortcuts"
+        />
+      </el-form-item>
       <el-form-item>
         <el-button type="primary" @click="loadData">搜索</el-button>
+        <el-button @click="resetFilters">重置</el-button>
       </el-form-item>
     </el-form>
 
@@ -43,7 +65,7 @@
           <el-tag :type="statusTagType(row.handleStatus)" size="small">{{ statusLabel(row.handleStatus) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="createTime" label="分析时间" width="180" />
+      <el-table-column prop="createTime" label="分析时间" width="180" sortable />
       <el-table-column label="操作" width="100">
         <template #default="{ row }">
           <el-button size="small" link type="primary" @click="viewDetail(row)">详情</el-button>
@@ -62,8 +84,30 @@
 
     <el-drawer v-model="drawerVisible" title="SQL 分析详情" size="65%">
       <template v-if="currentDetail">
+        <div class="detail-actions">
+          <span class="status-label">当前状态：</span>
+          <el-tag :type="statusTagType(currentDetail.analysis?.handleStatus)" size="default">
+            {{ statusLabel(currentDetail.analysis?.handleStatus) }}
+          </el-tag>
+          <el-divider direction="vertical" />
+          <span class="status-label">修改状态：</span>
+          <el-button-group>
+            <el-button
+              v-for="s in statusOptions"
+              :key="s.value"
+              :type="currentDetail.analysis?.handleStatus === s.value ? 'primary' : 'default'"
+              size="small"
+              @click="handleStatusChange(s.value)"
+              :disabled="currentDetail.analysis?.handleStatus === s.value"
+            >{{ s.label }}</el-button>
+          </el-button-group>
+        </div>
+
         <h4>SQL 来源</h4>
         <el-descriptions :column="1" border size="small">
+          <el-descriptions-item label="所属项目">
+            <code>{{ currentDetail.projectName ?? '-' }}</code>
+          </el-descriptions-item>
           <el-descriptions-item label="文件路径">
             <code>{{ currentDetail.sourceFile ?? '-' }}</code>
           </el-descriptions-item>
@@ -103,21 +147,87 @@
         <el-card shadow="never">
           <pre class="sql-block">{{ currentDetail.tableMetaContext ?? '未匹配到表结构文件' }}</pre>
         </el-card>
+
+        <h4 v-if="currentDetail.analysis?.handleNote">处理备注</h4>
+        <el-card v-if="currentDetail.analysis?.handleNote" shadow="never">
+          <pre class="ai-report">{{ currentDetail.analysis.handleNote }}</pre>
+        </el-card>
       </template>
     </el-drawer>
+
+    <el-dialog v-model="noteDialogVisible" title="添加处理备注" width="400px">
+      <el-input v-model="handleNote" type="textarea" :rows="3" placeholder="请输入处理备注（可选）" />
+      <template #footer>
+        <el-button @click="noteDialogVisible = false">取消</el-button>
+        <el-button type="primary" @click="confirmStatusChange">确认</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { analysisApi } from '../api'
+import { ElMessage } from 'element-plus'
+import { analysisApi, projectApi } from '../api'
 
 const records = ref<any[]>([])
+const projects = ref<any[]>([])
 const page = ref(1)
 const total = ref(0)
-const filters = ref({ riskLevel: '', handleStatus: '' })
+const filters = ref<{
+  projectId: number | null
+  riskLevel: string
+  handleStatus: string
+  timeRange: [string, string] | null
+}>({
+  projectId: null,
+  riskLevel: '',
+  handleStatus: '',
+  timeRange: null
+})
 const drawerVisible = ref(false)
 const currentDetail = ref<any>(null)
+const noteDialogVisible = ref(false)
+const handleNote = ref('')
+const pendingStatus = ref('')
+
+const statusOptions = [
+  { value: 'ANALYZED', label: 'AI已分析' },
+  { value: 'CONFIRMED', label: '已确认' },
+  { value: 'FIXED', label: '已修复' },
+  { value: 'IGNORED', label: '已忽略' },
+  { value: 'FALSE_POSITIVE', label: '误报' }
+]
+
+const timeShortcuts = [
+  {
+    text: '最近1天',
+    value: () => {
+      const end = new Date()
+      const start = new Date()
+      start.setDate(start.getDate() - 1)
+      return [start, end]
+    }
+  },
+  {
+    text: '最近7天',
+    value: () => {
+      const end = new Date()
+      const start = new Date()
+      start.setDate(start.getDate() - 7)
+      return [start, end]
+    }
+  },
+  {
+    text: '最近30天',
+    value: () => {
+      const end = new Date()
+      const start = new Date()
+      start.setDate(start.getDate() - 30)
+      return [start, end]
+    }
+  }
+]
 
 const riskTagType = (level: string) => {
   switch (level) {
@@ -166,14 +276,34 @@ const formatJson = (jsonStr: string | null) => {
   }
 }
 
+const resetFilters = () => {
+  filters.value = { projectId: null, riskLevel: '', handleStatus: '', timeRange: null }
+  page.value = 1
+  loadData()
+}
+
 const loadData = async () => {
   try {
     const params: Record<string, any> = { current: page.value, size: 10 }
+    if (filters.value.projectId) params.projectId = filters.value.projectId
     if (filters.value.riskLevel) params.riskLevel = filters.value.riskLevel
     if (filters.value.handleStatus) params.handleStatus = filters.value.handleStatus
+    if (filters.value.timeRange && filters.value.timeRange.length === 2) {
+      params.startTime = filters.value.timeRange[0]
+      params.endTime = filters.value.timeRange[1]
+    }
     const res: any = await analysisApi.page(params)
     records.value = res.data?.records ?? []
     total.value = res.data?.total ?? 0
+  } catch {
+    // handle error
+  }
+}
+
+const loadProjects = async () => {
+  try {
+    const res: any = await projectApi.list()
+    projects.value = res.data ?? []
   } catch {
     // handle error
   }
@@ -189,12 +319,50 @@ const viewDetail = async (row: any) => {
   }
 }
 
-onMounted(loadData)
+const handleStatusChange = (status: string) => {
+  pendingStatus.value = status
+  handleNote.value = ''
+  noteDialogVisible.value = true
+}
+
+const confirmStatusChange = async () => {
+  if (!currentDetail.value?.analysis?.id) return
+  try {
+    await analysisApi.handle(currentDetail.value.analysis.id, pendingStatus.value, handleNote.value || undefined)
+    currentDetail.value.analysis.handleStatus = pendingStatus.value
+    if (handleNote.value) {
+      currentDetail.value.analysis.handleNote = handleNote.value
+    }
+    noteDialogVisible.value = false
+    ElMessage.success('状态更新成功')
+    loadData()
+  } catch {
+    ElMessage.error('状态更新失败')
+  }
+}
+
+onMounted(() => {
+  loadProjects()
+  loadData()
+})
 </script>
 
 <style scoped>
 .filter-form {
   margin-bottom: 16px;
+}
+.detail-actions {
+  display: flex;
+  align-items: center;
+  margin-bottom: 20px;
+  padding: 12px 16px;
+  background: #f5f7fa;
+  border-radius: 4px;
+}
+.status-label {
+  font-size: 14px;
+  color: #606266;
+  margin-right: 8px;
 }
 .ai-report {
   white-space: pre-wrap;

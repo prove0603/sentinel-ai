@@ -8,6 +8,8 @@ public class AnalysisDetailVo {
 
     private SqlAnalysis analysis;
 
+    private String projectName;
+
     private String sqlText;
 
     private String sqlNormalized;

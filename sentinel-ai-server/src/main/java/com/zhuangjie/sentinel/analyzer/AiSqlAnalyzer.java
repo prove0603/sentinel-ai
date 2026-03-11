@@ -1,24 +1,27 @@
 package com.zhuangjie.sentinel.analyzer;
 
+import com.alibaba.dashscope.aigc.multimodalconversation.MultiModalConversation;
+import com.alibaba.dashscope.aigc.multimodalconversation.MultiModalConversationParam;
+import com.alibaba.dashscope.aigc.multimodalconversation.MultiModalConversationResult;
+import com.alibaba.dashscope.common.MultiModalMessage;
+import com.alibaba.dashscope.common.Role;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zhuangjie.sentinel.knowledge.KnowledgeContextBuilder;
 import com.zhuangjie.sentinel.pojo.dto.ScannedSql;
 import com.zhuangjie.sentinel.pojo.dto.SqlRiskAssessment;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.ai.chat.client.ChatClient;
-import org.springframework.ai.chat.model.ChatResponse;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cache.Cache;
 import org.springframework.cache.CacheManager;
 import org.springframework.stereotype.Component;
 
+import java.util.*;
+
 /**
- * AI-powered SQL performance analysis using Spring AI Alibaba (DashScope / Qwen).
- * <p>
- * All SQL statements are analyzed directly by AI with table structure context.
+ * AI-powered SQL performance analysis using DashScope MultiModalConversation API.
+ * Supports qwen3.5-plus and other multi-modal models.
  * Caffeine cache prevents redundant calls for the same SQL hash.
  */
 @Slf4j
@@ -31,8 +34,15 @@ public class AiSqlAnalyzer {
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
+    private static final String SYSTEM_PROMPT = """
+            你是一个资深的 MySQL DBA，拥有 10 年以上数据库性能优化经验。
+            你的任务是分析 SQL 语句的性能风险，给出准确的判断和可执行的优化建议。
+            你需要结合表结构、索引信息、数据量来做出判断。
+            分析时请使用中文回复。
+            """;
+
     private static final String PROMPT_TEMPLATE = """
-            你是一位资深 MySQL DBA，请对以下 SQL 语句进行性能风险分析。
+            请对以下 SQL 语句进行性能风险分析。
 
             ## SQL 信息
             - **SQL 类型：** %s
@@ -76,39 +86,37 @@ public class AiSqlAnalyzer {
             }
             """;
 
-    private final ChatClient chatClient;
+    private final MultiModalConversation conversation;
     private final CacheManager cacheManager;
     private final KnowledgeContextBuilder knowledgeContextBuilder;
 
-    @Value("${sentinel.ai.model:qwen-plus}")
+    @Value("${sentinel.ai.model:qwen3.5-plus}")
     private String model;
 
-    public AiSqlAnalyzer(@Autowired(required = false) @Qualifier("sqlAnalysisChatClient") ChatClient chatClient,
+    @Value("${sentinel.ai.api-key:${AI_DASHSCOPE_API_KEY:}}")
+    private String apiKey;
+
+    @Value("${sentinel.ai.temperature:0.2}")
+    private float temperature;
+
+    public AiSqlAnalyzer(@Autowired(required = false) MultiModalConversation conversation,
                           CacheManager cacheManager,
                           @Autowired(required = false) KnowledgeContextBuilder knowledgeContextBuilder) {
-        this.chatClient = chatClient;
+        this.conversation = conversation;
         this.cacheManager = cacheManager;
         this.knowledgeContextBuilder = knowledgeContextBuilder;
-        if (chatClient == null) {
-            log.info("AI analysis disabled: ChatClient not configured. Set sentinel.ai.enabled=true and AI_DASHSCOPE_API_KEY to enable.");
+        if (conversation == null) {
+            log.info("AI analysis disabled: MultiModalConversation not configured. Set sentinel.ai.enabled=true and AI_DASHSCOPE_API_KEY to enable.");
         } else {
-            log.info("AI analysis enabled, knowledge context: {}",
+            log.info("AI analysis enabled (DashScope MultiModalConversation), knowledge context: {}",
                     knowledgeContextBuilder != null && knowledgeContextBuilder.isAvailable() ? "available" : "unavailable");
         }
     }
 
     public boolean isAvailable() {
-        return chatClient != null;
+        return conversation != null;
     }
 
-    /**
-     * Analyzes a SQL statement using AI.
-     *
-     * @param sqlHash     normalized SQL hash (used as cache key)
-     * @param sql         the scanned SQL
-     * @param projectName the project name for knowledge context retrieval (nullable)
-     * @return AI assessment, or null if AI unavailable or analysis fails
-     */
     public AiAnalysisDetail analyze(String sqlHash, ScannedSql sql, String projectName) {
         if (!isAvailable()) {
             return null;
@@ -151,17 +159,40 @@ public class AiSqlAnalyzer {
     private AiAnalysisDetail callWithRetry(String promptText) {
         for (int attempt = 0; attempt <= MAX_RETRIES; attempt++) {
             try {
-                ChatResponse response = chatClient.prompt()
-                        .user(promptText)
-                        .call()
-                        .chatResponse();
+                MultiModalMessage systemMsg = MultiModalMessage.builder()
+                        .role(Role.SYSTEM.getValue())
+                        .content(List.of(Collections.singletonMap("text", SYSTEM_PROMPT)))
+                        .build();
 
-                String content = response.getResult().getOutput().getText();
+                MultiModalMessage userMsg = MultiModalMessage.builder()
+                        .role(Role.USER.getValue())
+                        .content(List.of(Collections.singletonMap("text", promptText)))
+                        .build();
+
+                List<MultiModalMessage> messages = new ArrayList<>();
+                messages.add(systemMsg);
+                messages.add(userMsg);
+
+                MultiModalConversationParam.MultiModalConversationParamBuilder<?, ?> paramBuilder =
+                        MultiModalConversationParam.builder()
+                                .model(model)
+                                .messages(messages)
+                                .temperature(temperature);
+
+                if (apiKey != null && !apiKey.isBlank()) {
+                    paramBuilder.apiKey(apiKey);
+                }
+
+                MultiModalConversationResult result = conversation.call(paramBuilder.build());
+
+                String content = (String) result.getOutput().getChoices()
+                        .get(0).getMessage().getContent().get(0).get("text");
+
                 SqlRiskAssessment assessment = parseResponse(content);
 
                 int tokensUsed = 0;
-                if (response.getMetadata() != null && response.getMetadata().getUsage() != null) {
-                    tokensUsed = (int) response.getMetadata().getUsage().getTotalTokens();
+                if (result.getUsage() != null) {
+                    tokensUsed = result.getUsage().getInputTokens() + result.getUsage().getOutputTokens();
                 }
 
                 log.debug("AI analysis completed: riskLevel={}, tokens={}", assessment.riskLevel(), tokensUsed);

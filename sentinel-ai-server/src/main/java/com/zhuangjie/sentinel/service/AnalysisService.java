@@ -2,17 +2,19 @@ package com.zhuangjie.sentinel.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.zhuangjie.sentinel.db.entity.ProjectConfig;
 import com.zhuangjie.sentinel.db.entity.SqlAnalysis;
 import com.zhuangjie.sentinel.db.entity.SqlRecord;
 import com.zhuangjie.sentinel.db.service.SqlAnalysisDbService;
 import com.zhuangjie.sentinel.db.service.SqlRecordDbService;
 import com.zhuangjie.sentinel.knowledge.KnowledgeContextBuilder;
 import com.zhuangjie.sentinel.pojo.vo.AnalysisDetailVo;
-import com.zhuangjie.sentinel.service.ProjectService;
-import com.zhuangjie.sentinel.db.entity.ProjectConfig;
 import lombok.RequiredArgsConstructor;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
+
+import java.time.LocalDateTime;
+import java.util.List;
 
 @Service
 @RequiredArgsConstructor
@@ -33,14 +35,32 @@ public class AnalysisService {
                         .orderByAsc(SqlAnalysis::getFinalRiskLevel));
     }
 
-    public Page<SqlAnalysis> pageByRisk(String riskLevel, String handleStatus, int current, int size) {
-        return sqlAnalysisDbService.page(
-                new Page<>(current, size),
-                new LambdaQueryWrapper<SqlAnalysis>()
-                        .eq(riskLevel != null && !riskLevel.isBlank(), SqlAnalysis::getFinalRiskLevel, riskLevel)
-                        .eq(handleStatus != null && !handleStatus.isBlank(), SqlAnalysis::getHandleStatus, handleStatus)
-                        .orderByAsc(SqlAnalysis::getFinalRiskLevel)
-                        .orderByDesc(SqlAnalysis::getCreateTime));
+    public Page<SqlAnalysis> pageByCondition(Long projectId, String riskLevel, String handleStatus,
+                                              LocalDateTime startTime, LocalDateTime endTime,
+                                              int current, int size) {
+        LambdaQueryWrapper<SqlAnalysis> wrapper = new LambdaQueryWrapper<>();
+
+        if (projectId != null) {
+            List<Long> recordIds = sqlRecordDbService.list(
+                    new LambdaQueryWrapper<SqlRecord>()
+                            .select(SqlRecord::getId)
+                            .eq(SqlRecord::getProjectId, projectId)
+                            .eq(SqlRecord::getStatus, 1)
+            ).stream().map(SqlRecord::getId).toList();
+
+            if (recordIds.isEmpty()) {
+                return new Page<>(current, size);
+            }
+            wrapper.in(SqlAnalysis::getSqlRecordId, recordIds);
+        }
+
+        wrapper.eq(riskLevel != null && !riskLevel.isBlank(), SqlAnalysis::getFinalRiskLevel, riskLevel)
+                .eq(handleStatus != null && !handleStatus.isBlank(), SqlAnalysis::getHandleStatus, handleStatus)
+                .ge(startTime != null, SqlAnalysis::getCreateTime, startTime)
+                .le(endTime != null, SqlAnalysis::getCreateTime, endTime)
+                .orderByDesc(SqlAnalysis::getCreateTime);
+
+        return sqlAnalysisDbService.page(new Page<>(current, size), wrapper);
     }
 
     public AnalysisDetailVo getDetail(Long id) {
@@ -61,9 +81,12 @@ public class AnalysisService {
             vo.setSourceFile(record.getSourceFile());
             vo.setSourceLocation(record.getSourceLocation());
 
-            if (knowledgeContextBuilder != null && knowledgeContextBuilder.isAvailable()) {
-                ProjectConfig project = projectService.getById(record.getProjectId());
-                if (project != null && record.getSqlNormalized() != null) {
+            ProjectConfig project = projectService.getById(record.getProjectId());
+            if (project != null) {
+                vo.setProjectName(project.getProjectName());
+
+                if (knowledgeContextBuilder != null && knowledgeContextBuilder.isAvailable()
+                        && record.getSqlNormalized() != null) {
                     try {
                         String ctx = knowledgeContextBuilder.buildContext(
                                 record.getSqlNormalized(), project.getProjectName());
@@ -83,6 +106,7 @@ public class AnalysisService {
         analysis.setHandleStatus(status);
         analysis.setHandleNote(note);
         analysis.setHandler(handler);
+        analysis.setHandleTime(LocalDateTime.now());
         return sqlAnalysisDbService.updateById(analysis);
     }
 }

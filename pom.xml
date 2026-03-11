@@ -23,7 +23,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
 
         <spring-boot.version>3.4.3</spring-boot.version>
-        <spring-ai-alibaba.version>1.1.2.1</spring-ai-alibaba.version>
+        <dashscope-sdk.version>2.22.7</dashscope-sdk.version>
         <mybatis-plus.version>3.5.7</mybatis-plus.version>
         <jsqlparser.version>5.0</jsqlparser.version>
         <javaparser.version>3.26.2</javaparser.version>
@@ -44,9 +44,9 @@
             </dependency>
 
             <dependency>
-                <groupId>com.alibaba.cloud.ai</groupId>
-                <artifactId>spring-ai-alibaba-starter-dashscope</artifactId>
-                <version>${spring-ai-alibaba.version}</version>
+                <groupId>com.alibaba</groupId>
+                <artifactId>dashscope-sdk-java</artifactId>
+                <version>${dashscope-sdk.version}</version>
             </dependency>
 
             <dependency>
@@ -93,14 +93,4 @@
         </dependencies>
     </dependencyManagement>
 
-    <repositories>
-        <repository>
-            <id>spring-milestones</id>
-            <name>Spring Milestones</name>
-            <url>https://repo.spring.io/milestone</url>
-            <snapshots>
-                <enabled>false</enabled>
-            </snapshots>
-        </repository>
-    </repositories>
 </project>

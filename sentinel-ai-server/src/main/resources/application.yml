@@ -17,7 +17,9 @@ spring:
 sentinel:
   ai:
     enabled: false
-    model: qwen-max
+    model: qwen3.5-plus
+    api-key: ${AI_DASHSCOPE_API_KEY:}
+    temperature: 0.2
     max-ai-calls-per-scan: -1
 
 mybatis-plus:

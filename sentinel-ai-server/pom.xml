@@ -35,16 +35,10 @@
             <artifactId>spring-boot-starter-cache</artifactId>
         </dependency>
 
-        <!-- AI - Spring AI Alibaba (DashScope / Qwen) -->
+        <!-- AI - DashScope SDK (supports MultiModalConversation for qwen3.5-plus) -->
         <dependency>
-            <groupId>com.alibaba.cloud.ai</groupId>
-            <artifactId>spring-ai-alibaba-starter-dashscope</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>com.alibaba.cloud.ai</groupId>
-            <artifactId>spring-ai-alibaba-agent-framework</artifactId>
-            <version>1.1.2.0</version>
+            <groupId>com.alibaba</groupId>
+            <artifactId>dashscope-sdk-java</artifactId>
         </dependency>
         <!-- Database -->
         <dependency>

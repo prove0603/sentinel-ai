@@ -1,6 +1,6 @@
 package com.zhuangjie.sentinel.config;
 
-import org.springframework.ai.chat.client.ChatClient;
+import com.alibaba.dashscope.aigc.multimodalconversation.MultiModalConversation;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -8,20 +8,9 @@ import org.springframework.context.annotation.Configuration;
 @Configuration
 public class AiConfig {
 
-    /**
-     * ChatClient bean is created only when sentinel.ai.enabled=true.
-     * Requires a valid AI_DASHSCOPE_API_KEY environment variable.
-     */
     @Bean
     @ConditionalOnProperty(name = "sentinel.ai.enabled", havingValue = "true")
-    public ChatClient sqlAnalysisChatClient(ChatClient.Builder builder) {
-        return builder
-                .defaultSystem("""
-                        你是一个资深的 MySQL DBA，拥有 10 年以上数据库性能优化经验。
-                        你的任务是分析 SQL 语句的性能风险，给出准确的判断和可执行的优化建议。
-                        你需要结合表结构、索引信息、数据量来做出判断。
-                        分析时请使用中文回复。
-                        """)
-                .build();
+    public MultiModalConversation multiModalConversation() {
+        return new MultiModalConversation();
     }
 }

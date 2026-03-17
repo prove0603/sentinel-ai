@@ -8,7 +8,9 @@ import com.alibaba.dashscope.common.Role;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.zhuangjie.sentinel.knowledge.KnowledgeContextBuilder;
+import com.zhuangjie.sentinel.knowledge.TableNameExtractor;
 import com.zhuangjie.sentinel.pojo.dto.ScannedSql;
+import com.zhuangjie.sentinel.rag.KnowledgeRagService;
 import com.zhuangjie.sentinel.pojo.dto.SqlRiskAssessment;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -54,6 +56,8 @@ public class AiSqlAnalyzer {
 
             %s
 
+            %s
+
             ## 分析要求
             1. 给出风险等级：P0（紧急-必定慢SQL）/ P1（高危）/ P2（中危）/ P3（低危）/ P4（安全）
             2. 判断是否能使用索引，若能使用则说明预计使用哪个索引
@@ -89,6 +93,8 @@ public class AiSqlAnalyzer {
     private final MultiModalConversation conversation;
     private final CacheManager cacheManager;
     private final KnowledgeContextBuilder knowledgeContextBuilder;
+    private final KnowledgeRagService knowledgeRagService;
+    private final TableNameExtractor tableNameExtractor;
 
     @Value("${sentinel.ai.model:qwen3.5-plus}")
     private String model;
@@ -101,15 +107,20 @@ public class AiSqlAnalyzer {
 
     public AiSqlAnalyzer(@Autowired(required = false) MultiModalConversation conversation,
                           CacheManager cacheManager,
-                          @Autowired(required = false) KnowledgeContextBuilder knowledgeContextBuilder) {
+                          @Autowired(required = false) KnowledgeContextBuilder knowledgeContextBuilder,
+                          @Autowired(required = false) KnowledgeRagService knowledgeRagService,
+                          @Autowired(required = false) TableNameExtractor tableNameExtractor) {
         this.conversation = conversation;
         this.cacheManager = cacheManager;
         this.knowledgeContextBuilder = knowledgeContextBuilder;
+        this.knowledgeRagService = knowledgeRagService;
+        this.tableNameExtractor = tableNameExtractor;
         if (conversation == null) {
             log.info("AI analysis disabled: MultiModalConversation not configured. Set sentinel.ai.enabled=true and AI_DASHSCOPE_API_KEY to enable.");
         } else {
-            log.info("AI analysis enabled (DashScope MultiModalConversation), knowledge context: {}",
-                    knowledgeContextBuilder != null && knowledgeContextBuilder.isAvailable() ? "available" : "unavailable");
+            log.info("AI analysis enabled (DashScope MultiModalConversation), DDL context: {}, RAG: {}",
+                    knowledgeContextBuilder != null && knowledgeContextBuilder.isAvailable() ? "available" : "unavailable",
+                    knowledgeRagService != null && knowledgeRagService.isRagAvailable() ? "available" : "unavailable");
         }
     }
 
@@ -134,17 +145,30 @@ public class AiSqlAnalyzer {
         String tableContext = "";
         if (knowledgeContextBuilder != null && projectName != null) {
             try {
-                tableContext = knowledgeContextBuilder.buildContext(sql.sqlNormalized(), projectName);
+                tableContext = knowledgeContextBuilder.buildContext(sql.sqlNormalized());
             } catch (Exception e) {
                 log.warn("Failed to build knowledge context: {}", e.getMessage());
             }
         }
 
-        log.debug("AI analyze: sqlHash={}, tableContext={}", sqlHash,
-                tableContext.isBlank() ? "EMPTY (no DDL matched)" : "HAS DDL (" + tableContext.length() + " chars)");
+        String ragContext = "";
+        if (knowledgeRagService != null) {
+            try {
+                Set<String> tableNames = tableNameExtractor != null
+                        ? tableNameExtractor.extract(sql.sqlNormalized())
+                        : Set.of();
+                ragContext = knowledgeRagService.retrieveContext(sql.sqlNormalized(), tableNames);
+            } catch (Exception e) {
+                log.warn("Failed to retrieve RAG context: {}", e.getMessage());
+            }
+        }
+
+        log.debug("AI analyze: sqlHash={}, tableContext={}, ragContext={}", sqlHash,
+                tableContext.isBlank() ? "EMPTY" : "HAS DDL (" + tableContext.length() + " chars)",
+                ragContext.isBlank() ? "EMPTY" : "HAS RAG (" + ragContext.length() + " chars)");
 
         String promptText = String.format(PROMPT_TEMPLATE,
-                sql.sqlType(), sql.sourceLocation(), sql.sqlNormalized(), tableContext);
+                sql.sqlType(), sql.sourceLocation(), sql.sqlNormalized(), tableContext, ragContext);
 
         log.debug("AI prompt:\n{}", promptText);
 

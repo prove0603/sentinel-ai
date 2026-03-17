@@ -42,4 +42,15 @@ export const analysisApi = {
     api.put(`/analysis/${id}/handle`, null, { params: { status, note } })
 }
 
+export const knowledgeApi = {
+  page: (params: any) => api.get('/knowledge/page', { params }),
+  list: () => api.get('/knowledge/list'),
+  detail: (id: number) => api.get(`/knowledge/${id}`),
+  create: (data: any) => api.post('/knowledge', data),
+  update: (data: any) => api.put('/knowledge', data),
+  delete: (id: number) => api.delete(`/knowledge/${id}`),
+  reEmbed: (forceAll: boolean = false) => api.post('/knowledge/re-embed', null, { params: { forceAll } }),
+  status: () => api.get('/knowledge/status')
+}
+
 export default api

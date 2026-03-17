@@ -15,7 +15,7 @@ import java.util.regex.Pattern;
 /**
  * Builds table-structure context for AI prompts by reading DDL files from disk.
  * <p>
- * Directory layout: {@code {table-meta-dir}/{project-name}/{table_name}.sql}
+ * Directory layout: {@code {table-meta-dir}/{table_name}.sql}
  * <p>
  * Each .sql file contains SHOW CREATE TABLE output with an optional
  * {@code -- Estimated Rows: N} header comment.
@@ -49,26 +49,24 @@ public class KnowledgeContextBuilder {
     /**
      * Builds a context string containing relevant table structures for the given SQL.
      *
-     * @param sql         the normalized SQL text
-     * @param projectName the project name (used as subdirectory under table-meta-dir)
+     * @param sql the normalized SQL text
      * @return formatted context string, or empty string if no context found
      */
-    public String buildContext(String sql, String projectName) {
+    public String buildContext(String sql) {
         Set<String> tableNames = tableNameExtractor.extract(sql);
         if (tableNames.isEmpty()) {
             return "";
         }
 
-        Path projectDir = tableMetaDir.resolve(projectName);
-        if (!Files.isDirectory(projectDir)) {
-            log.debug("No table-meta directory for project: {}", projectName);
+        if (!Files.isDirectory(tableMetaDir)) {
+            log.debug("table-meta directory does not exist: {}", tableMetaDir);
             return "";
         }
 
         Set<String> resolvedBaseNames = new HashSet<>();
         List<TableFileContent> matched = new ArrayList<>();
         for (String tableName : tableNames) {
-            Path ddlFile = resolveDdlFile(projectDir, tableName);
+            Path ddlFile = resolveDdlFile(tableMetaDir, tableName);
             if (ddlFile == null) continue;
 
             String baseName = ddlFile.getFileName().toString().replace(".sql", "");
@@ -88,26 +86,11 @@ public class KnowledgeContextBuilder {
         }
 
         if (matched.isEmpty()) {
-            log.debug("No DDL files found for tables {} in project {}", tableNames, projectName);
+            log.debug("No DDL files found for tables {}", tableNames);
             return "";
         }
 
         return formatContext(matched);
-    }
-
-    /**
-     * Overload that accepts projectId — resolves project name from the configured projects.
-     * Falls back to using projectId as directory name.
-     */
-    public String buildContext(String sql, Long projectId) {
-        return buildContext(sql, String.valueOf(projectId));
-    }
-
-    /**
-     * Resolves project directory name: tries to find a matching subdirectory, otherwise uses project name directly.
-     */
-    public String buildContextByProjectName(String sql, String projectName) {
-        return buildContext(sql, projectName);
     }
 
     /**

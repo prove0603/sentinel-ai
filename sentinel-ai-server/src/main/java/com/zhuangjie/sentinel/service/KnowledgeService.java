@@ -15,7 +15,7 @@ import java.util.List;
 
 /**
  * Orchestrates knowledge base operations using file-based table metadata storage.
- * DDL files are stored as {@code {table-meta-dir}/{project-name}/{table_name}.sql}.
+ * DDL files are stored as {@code {table-meta-dir}/{table_name}.sql}.
  */
 @Slf4j
 @Service
@@ -43,8 +43,7 @@ public class KnowledgeService {
             throw new IllegalStateException("No db_connection_url configured for project: " + projectId);
         }
 
-        String projectName = project.getProjectName();
-        Path projectDir = Path.of(tableMetaDir, projectName);
+        Path outputDir = Path.of(tableMetaDir);
 
         List<TableMetaCollector.CollectedTable> collected =
                 tableMetaCollector.collect(project.getDbConnectionUrl());
@@ -54,15 +53,15 @@ public class KnowledgeService {
         }
 
         try {
-            Files.createDirectories(projectDir);
+            Files.createDirectories(outputDir);
         } catch (IOException e) {
-            log.error("Failed to create table-meta directory: {}", projectDir, e);
+            log.error("Failed to create table-meta directory: {}", outputDir, e);
             return 0;
         }
 
         int saved = 0;
         for (TableMetaCollector.CollectedTable table : collected) {
-            Path file = projectDir.resolve(table.tableName() + ".sql");
+            Path file = outputDir.resolve(table.tableName() + ".sql");
             try {
                 String content = buildFileContent(table);
                 Files.writeString(file, content, StandardCharsets.UTF_8);
@@ -72,26 +71,26 @@ public class KnowledgeService {
             }
         }
 
-        log.info("Saved {} DDL files to {}", saved, projectDir);
+        log.info("Saved {} DDL files to {}", saved, outputDir);
         return saved;
     }
 
     /**
-     * Lists all DDL files for a project.
+     * Lists all DDL files.
      */
-    public List<String> listTables(String projectName) {
-        Path projectDir = Path.of(tableMetaDir, projectName);
-        if (!Files.isDirectory(projectDir)) {
+    public List<String> listTables() {
+        Path outputDir = Path.of(tableMetaDir);
+        if (!Files.isDirectory(outputDir)) {
             return List.of();
         }
-        try (var stream = Files.list(projectDir)) {
+        try (var stream = Files.list(outputDir)) {
             return stream
                     .filter(p -> p.toString().endsWith(".sql"))
                     .map(p -> p.getFileName().toString().replace(".sql", ""))
                     .sorted()
                     .toList();
         } catch (IOException e) {
-            log.warn("Failed to list table-meta directory: {}", projectDir, e);
+            log.warn("Failed to list table-meta directory: {}", outputDir, e);
             return List.of();
         }
     }

@@ -14,4 +14,12 @@ public enum SqlSourceType {
 
     private final String code;
     private final String description;
+
+    public static SqlSourceType fromCode(String code) {
+        if (code == null) return MAPPER_XML;
+        for (SqlSourceType type : values()) {
+            if (type.code.equals(code)) return type;
+        }
+        return MAPPER_XML;
+    }
 }

@@ -88,8 +88,7 @@ public class AnalysisService {
                 if (knowledgeContextBuilder != null && knowledgeContextBuilder.isAvailable()
                         && record.getSqlNormalized() != null) {
                     try {
-                        String ctx = knowledgeContextBuilder.buildContext(
-                                record.getSqlNormalized(), project.getProjectName());
+                        String ctx = knowledgeContextBuilder.buildContext(record.getSqlNormalized());
                         vo.setTableMetaContext(ctx.isBlank() ? null : ctx);
                     } catch (Exception ignored) {
                     }

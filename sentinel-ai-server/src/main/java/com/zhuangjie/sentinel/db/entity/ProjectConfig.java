@@ -14,7 +14,17 @@ public class ProjectConfig {
 
     private String projectName;
 
+    /** Local git repo path (legacy, used when gitRemoteUrl is null) */
     private String gitRepoPath;
+
+    /** Remote git URL (SSH or HTTPS), e.g. git@gitlab.com:org/repo.git */
+    private String gitRemoteUrl;
+
+    /** Git branch to scan (default: master) */
+    private String gitBranch;
+
+    /** Webhook secret for verifying push events */
+    private String webhookSecret;
 
     private String lastScanCommit;
 

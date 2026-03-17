@@ -25,8 +25,11 @@ alwaysApply: true
 |------|------|------|
 | Java | Java 21 LTS | 21 |
 | 后端框架 | Spring Boot | 3.4.3 |
-| AI SDK | DashScope SDK (MultiModalConversation) | 2.22.7 |
+| AI SDK | DashScope SDK (MultiModalConversation + TextEmbedding) | 2.22.7 |
 | AI 模型 | 通义千问 Qwen3.5-Plus / Qwen-Plus / Qwen-Max | - |
+| Embedding 模型 | DashScope text-embedding-v3 (1024维) | - |
+| RAG 框架 | Spring AI (vanilla, 非 Alibaba) | 1.0.0 |
+| 向量数据库 | PostgreSQL + pgvector | PG18 |
 | ORM | MyBatis-Plus | 3.5.7 |
 | SQL 解析 | JSqlParser | 5.0 |
 | Java 源码 AST | JavaParser | 3.26.2 |
@@ -34,7 +37,7 @@ alwaysApply: true
 | 缓存 | Caffeine | 3.1.8 |
 | 工具 | Hutool, Guava | latest |
 | 前端 | Vue 3 + Vite + Element Plus + TypeScript | Vue 3.5, Vite 6 |
-| 数据库 | MySQL (prod) / H2 (dev) | - |
+| 数据库 | PostgreSQL 18 + pgvector 0.8.2（统一数据源，业务表 + 向量表） | - |
 | 构建 | Maven 多模块 | - |
 
 ---
@@ -43,12 +46,12 @@ alwaysApply: true
 
 ```
 sentinel-ai/
-├── pom.xml                          # 父 POM
-├── table-meta/                      # 表结构 DDL 文件（P5 文件方案）
-│   └── collection-management/       # 按项目维度组织
-│       ├── t_case.sql               # 每张表一个 .sql 文件
-│       ├── t_case_cf.sql            # 含 -- Estimated Rows: N 头部 + SHOW CREATE TABLE 输出
-│       └── ...                      # 共 929 张表
+├── pom.xml                          # 父 POM（含 Spring AI BOM 1.0.0）
+├── docker-compose.yml               # PostgreSQL + pgvector (RAG 向量数据库)
+├── table-meta/                      # 表结构 DDL 文件（扁平目录，不按项目分子目录）
+│   ├── t_case.sql                   # 每张表一个 .sql 文件
+│   ├── t_case_cf.sql                # 含 -- Estimated Rows: N 头部 + SHOW CREATE TABLE 输出
+│   └── ...                          # 共 870 张表（通过远程数据平台从生产环境采集）
 ├── sentinel-ai-server/              # Spring Boot 后端
 │   ├── pom.xml
 │   └── src/main/java/com/zhuangjie/sentinel/
@@ -71,20 +74,30 @@ sentinel-ai/
 │       │   ├── DynamicSqlExpander.java      # 动态 SQL 展开
 │       │   └── SqlNormalizer.java           # SQL 标准化 + 哈希
 │       ├── analyzer/                # AI 分析（纯 AI 架构，无本地规则引擎）
-│       │   └── AiSqlAnalyzer.java           # DashScope MultiModalConversation API 调用
-│       ├── delta/                   # Git 增量检测 ← P3
+│       │   └── AiSqlAnalyzer.java           # DashScope API 调用（注入 DDL + RAG 上下文）
+│       ├── delta/                   # Git 增量检测 ← P3+P7
 │       │   ├── GitDeltaDetector.java
+│       │   ├── GitRepoManager.java          # 远程 Git 仓库管理（clone/pull）← P7
 │       │   ├── DeltaResult.java
 │       │   ├── SqlHashComparator.java
 │       │   └── ComparisonResult.java
-│       ├── knowledge/               # 表结构知识库 ← P5（文件方案）
+│       ├── knowledge/               # 表结构知识库 ← P5+P7（文件方案 + 远程平台采集）
 │       │   ├── DdlExporter.java            # 独立命令行工具：从 MySQL 拉取 DDL 存为文件
 │       │   ├── TableMetaCollector.java      # JDBC 自动采集表结构（供 KnowledgeService 调用）
 │       │   ├── TableNameExtractor.java      # JSqlParser 提取 SQL 中引用的表名
-│       │   └── KnowledgeContextBuilder.java # 从 DDL 文件读取表结构 → 构建 AI Prompt 上下文
+│       │   ├── KnowledgeContextBuilder.java # 从 DDL 文件读取表结构 → 构建 AI Prompt 上下文
+│       │   ├── DataPlatformConfig.java      # 远程数据平台配置（含 API 路径、分批大小等）← P7
+│       │   ├── DataPlatformClient.java      # 远程数据平台 HTTP 客户端（SSO 登录 + SQL 查询）← P7
+│       │   └── RemoteDdlCollector.java      # 通过远程平台采集/对比生产环境 DDL（分批处理）← P7
+│       ├── rag/                     # RAG 业务知识库 ← P6
+│       │   ├── RagConfig.java             # RAG 基础设施：PG DataSource + PgVectorStore + EmbeddingModel
+│       │   ├── DashScopeEmbeddingModel.java # DashScope TextEmbedding → Spring AI EmbeddingModel 适配器
+│       │   └── KnowledgeRagService.java   # 知识 CRUD + 向量化嵌入 + 精确匹配 + 语义检索
 │       ├── db/
 │       │   ├── entity/
+│       │   │   └── KnowledgeEntry.java    # 业务知识条目实体 ← P6
 │       │   ├── mapper/
+│       │   │   └── KnowledgeEntryMapper.java
 │       │   └── service/
 │       └── pojo/
 │           ├── dto/
@@ -118,28 +131,83 @@ sentinel-ai/
 - `SqlHashComparator` - ✅ SQL 标准化后 hash 对比，分类 new/unchanged/removed
 - `ComparisonResult` - ✅ record 封装对比结果
 
-### Analyzer (分析引擎) — ✅ 纯 AI 架构（P1→P2→P5.1→P5.3 演进）
+### Analyzer (分析引擎) — ✅ 纯 AI 架构（P1→P2→P5.1→P5.3→P6 演进）
 - **已移除本地规则引擎**（P5.1）：RuleBasedAnalyzer 及 6 条规则已删除
 - **已移除 Spring AI Alibaba**（P5.3）：改用 DashScope SDK 原生 MultiModalConversation API
-  - 原因：Spring AI Alibaba Starter 使用文本生成 API，不支持 qwen3.5-plus 等多模态模型
-  - DashScope SDK 的 MultiModalConversation 接口支持所有新模型
 - `AiSqlAnalyzer` - ✅ 所有 SQL 全量由 AI 分析（Caffeine 缓存 + `max-ai-calls-per-scan` 控制成本）
   - 使用 `MultiModalConversation.call()` 替代 `ChatClient.prompt()`
-  - 支持 System + User 消息结构
-  - Prompt 包含：SQL 信息 + 表结构 DDL（含索引、数据量）
+  - Prompt 包含：SQL 信息 + 表结构 DDL + **RAG 业务知识**（P6 新增）
   - 输出：结构化 JSON（riskLevel, issues, indexSuggestions, rewriteSuggestions, explanation）
 
-### Knowledge (表结构知识库) — ✅ P5 已实现（文件方案）
-- **架构：** 文件方案取代 RAG/PGVector，零外部依赖
-- **目录结构：** `table-meta/{project-name}/{table_name}.sql`
-- **文件格式：** `-- Estimated Rows: N` 头部注释 + `SHOW CREATE TABLE` 完整输出（含索引）
-- `DdlExporter` - 独立命令行工具（`main()` 方法），连接 MySQL 数据库，对每张表执行 `SHOW CREATE TABLE` + 查询 `INFORMATION_SCHEMA.TABLES` 获取行数，存为 .sql 文件
+### Knowledge (表结构知识库) — ✅ P5+P7 已实现（文件方案 + 远程平台采集）
+- **架构：** 文件方案，DDL 文件扁平存储在 `table-meta/` 目录下（不按项目分子目录）
+- **目录结构：** `table-meta/{table_name}.sql`
+- **文件格式：** `-- Estimated Rows: N` 头部注释 + `SHOW CREATE TABLE` 完整输出（含索引），可选追加 `-- === Index Statistics ===` 索引统计区域
+- **DDL 采集方式：**
+  1. `DdlExporter` - 独立命令行工具（JDBC 直连数据库，适用于开发环境）
+  2. `RemoteDdlCollector` - 通过远程数据平台 API 采集（适用于生产环境，网络隔离场景）← P7
 - `TableMetaCollector` - 供 `KnowledgeService` 调用的 JDBC 采集组件
 - `TableNameExtractor` - JSqlParser 从 SQL 中提取所有引用表名（含 JOIN/子查询/DML）
 - `KnowledgeContextBuilder` - 从 DDL 文件读取表结构 → 格式化为 AI Prompt 上下文
-  - 提取 SQL 中的表名 → 查找对应 .sql 文件 → 读取内容 → 解析行数 → 构建上下文
+  - `buildContext(sql)` — 提取 SQL 中的表名 → 在 `table-meta/` 下查找对应 .sql 文件 → 读取内容 → 解析行数 → 构建上下文
 - `KnowledgeService` - 编排采集→存文件流程
-- AI Prompt 注入：`AiSqlAnalyzer` 调用 `KnowledgeContextBuilder.buildContext(sql, projectName)` 获取表结构上下文
+- AI Prompt 注入：`AiSqlAnalyzer` 调用 `KnowledgeContextBuilder.buildContext(sql)` 获取表结构上下文
+
+### 远程数据平台集成 — ✅ P7+P7.1 已实现（可选依赖）
+- **定位：** 可选组件。未配置数据平台时，用户可手动维护 `table-meta/` 下的 DDL 文件，不影响其他功能
+- **用途：** 从远程数据查询平台采集生产环境表结构 DDL 和索引统计（网络隔离场景）
+- **认证流程：** SSO 登录（加密用户名/密码）→ 获取 ticket（从 redirect_url 解析）→ 校验 ticket 获取 token
+- **敏感信息保护：** URL、凭据等直接配置在 `application-dev.yml`（已在 `.gitignore` 中），提供 `application-dev.yml.example` 供参考
+- **分批处理：** 采集、对比、刷新均按批次处理（默认每批 30 张表），通过 `collect-batch-size`/`diff-batch-size` 配置
+- **Bean 加载：** `DataPlatformClient`、`RemoteDdlCollector` 均使用 `@ConditionalOnProperty(sentinel.data-platform.enabled=true)`，`TableMetaController` 通过 `@Autowired(required = false)` 注入，平台未配置时自动降级
+- `DataPlatformConfig` — `@ConfigurationProperties(prefix = "sentinel.data-platform")`，含 API 路径、分批大小等配置
+- `DataPlatformClient` — HTTP 客户端，处理 SSO 登录 + SQL 查询执行（Java 11 HttpClient）
+  - `login()` — SSO 认证 → ticket 提取（兼容 `results.ticket` 和 `redirect_url` 两种格式）→ token 获取
+  - `executeQuery(sql)` — 提交 SQL → 获取 result_id → 拉取分页结果（API 路径均从配置读取）
+- `RemoteDdlCollector` — 分批采集/对比/刷新 DDL + 索引统计
+  - `collectAll()` — 分批采集所有表的 DDL，写入文件，检测变更
+  - `detectChanges()` — 分批对比本地 DDL 文件与线上 DDL，返回 changed/new/deleted 三类差异
+  - `refreshDdl(limit)` — ✅ P7.1：刷新已有表的 DDL（仅更新已有文件），支持 limit 参数控制数量，保留已有索引统计
+  - `refreshIndexStats(limit)` — ✅ P7.1：查询 INFORMATION_SCHEMA.STATISTICS，采集索引区分度/基数/选择性，追加到 DDL 文件末尾
+
+### Git 远程仓库集成 — ✅ P7 已实现（Webhook + 自动 clone/pull）
+- **架构：** GitLab/GitHub Webhook 推送 → 匹配项目 → 自动同步代码 → 触发增量扫描
+- `GitRepoManager` — 管理远程仓库本地克隆（clone 不存在时自动克隆，已存在时 pull 更新）
+  - 本地克隆目录：`${sentinel.git.clone-base-dir}/${project-safe-name}/`
+  - 兼容旧版 `gitRepoPath`（本地项目路径）
+- `WebhookController` — REST API（`/api/webhook/gitlab`、`/api/webhook/github`）
+  - GitLab：校验 `X-Gitlab-Token` header
+  - GitHub：校验 `X-Hub-Signature-256` HmacSHA256 签名
+  - 匹配逻辑：按 Git URL（SSH/HTTPS）+ 分支名匹配项目配置
+- `ProjectConfig` — 新增字段：`gitRemoteUrl`、`gitBranch`（默认 master）、`webhookSecret`
+- `ScanService` — 扫描前自动调用 `gitRepoManager.syncRepo()` 确保代码最新
+
+### DDL 变更感知 — ✅ P7 已实现
+- `DdlChangeService` — DDL 变更时重新分析受影响的 SQL
+  - 远程 DDL 采集时检测文件内容变化 → 记录变更表名
+  - 遍历所有活跃 SQL 记录 → 提取引用表名 → 与变更表交集 → 触发 AI 重新分析
+  - 异步执行（`@Async`），新建 SqlAnalysis 记录，标注 "DDL change re-analysis"
+
+### RAG 业务知识库 — ✅ P6 已实现
+- **架构决策：** Spring AI (vanilla) + 自定义 DashScope Embedding 适配器 + PGVector
+  - 不用 Spring AI Alibaba：避免 ChatModel 自动配置冲突，减少依赖链
+  - DashScope SDK 已有 `TextEmbedding` API，写适配器 ~100 行即可
+- **向量数据库：** PostgreSQL + pgvector，通过 Docker 部署（`docker-compose.yml`）
+- **Embedding：** DashScope `text-embedding-v3`，1024 维，余弦距离，HNSW 索引
+- **双重检索策略：**
+  1. 精确匹配：按 SQL 涉及的表名匹配知识条目的 `relatedTables` 字段
+  2. 语义检索：SQL 文本 → Embedding → PGVector 相似度搜索 Top-3
+  - 两种结果合并去重后注入 AI Prompt
+- **知识类型：** EXEMPTION（豁免）、BACKGROUND（业务背景）、EXPERIENCE（优化经验）、QPS_INFO（调用量）、SLOW_QUERY_NOTE（慢查询备注）
+- **数据流：**
+  - 知识条目 CRUD → PostgreSQL（`t_knowledge_entry` 表）
+  - 创建/更新时自动向量化 → PGVector（`knowledge_vector` 表，同一 PG 实例）
+  - AI 分析时检索 → 注入 Prompt（`## 相关业务知识（RAG 检索）`）
+- `RagConfig` — RAG 基础设施配置（`@ConditionalOnProperty(sentinel.rag.enabled=true)`）
+- `DashScopeEmbeddingModel` — DashScope SDK `TextEmbedding` → Spring AI `EmbeddingModel` 适配器
+- `KnowledgeRagService` — 知识 CRUD + 向量化 + 精确匹配 + 语义检索
+- `KnowledgeController` — REST API（CRUD + 重新向量化 + RAG 状态查询）
+- 前端知识库管理页面：列表/新增/编辑/删除/重新向量化
 
 ### AI 集成 (DashScope SDK) — ✅ P2 + P5 + P5.3
 - **已迁移至 DashScope SDK 原生 API**（P5.3），使用 `MultiModalConversation` 接口
@@ -155,11 +223,13 @@ sentinel-ai/
 ## 数据库表
 
 ```
-t_project_config   -- 项目配置
+t_project_config   -- 项目配置（含 git_remote_url, git_branch, webhook_secret）
 t_table_meta       -- 表结构元数据（历史遗留，文件方案后不再核心依赖）
 t_sql_record       -- SQL 记录（含 project_id）
 t_scan_batch       -- 扫描批次
 t_sql_analysis     -- 分析结果（通过 sql_record_id 关联 project_id）
+t_knowledge_entry  -- 业务知识条目（P6 RAG）
+knowledge_vector   -- 向量存储（P6 RAG）— PgVectorStore 自动管理
 ```
 
 ---
@@ -174,6 +244,16 @@ t_sql_analysis     -- 分析结果（通过 sql_record_id 关联 project_id）
   - `PUT /api/analysis/{id}/handle` - 修改处理状态（支持 status、note、handler）
 - `/api/dashboard/*` - 仪表盘
 - `/api/table-meta/*` - 表结构元数据管理
+  - `POST /api/table-meta/remote-collect` — 远程平台 DDL 全量采集（分批，支持 reAnalyzeChanged 参数）
+  - `POST /api/table-meta/refresh-ddl?limit=10` — ✅ P7.1：刷新已有表的 DDL（limit 默认 10，-1 不限）
+  - `POST /api/table-meta/refresh-index-stats?limit=10` — ✅ P7.1：刷新已有表的索引统计（limit 默认 10，-1 不限）
+  - `GET /api/table-meta/detect-changes` — 检测本地 DDL 与线上差异（分批对比）
+  - `GET /api/table-meta/connection-test` — 远程平台连接测试
+  - `GET /api/table-meta/list` — 列出所有已采集的 DDL 表
+- `/api/webhook/*` - Git Webhook 接收
+  - `POST /api/webhook/gitlab` — GitLab push 事件
+  - `POST /api/webhook/github` — GitHub push 事件
+- `/api/knowledge/*` - 业务知识库管理（CRUD + 重新向量化 + RAG 状态）
 
 ---
 
@@ -184,8 +264,8 @@ t_sql_analysis     -- 分析结果（通过 sql_record_id 关联 project_id）
 - 虚拟线程：`spring.threads.virtual.enabled=true`
 - Java 21 特性：record, sealed interface, pattern matching, 文本块
 - AI 调用缓存：Caffeine (key = sql_hash)
-- 表结构知识：文件方案 `table-meta/{project-name}/{table}.sql`
-- 开发环境用 H2 数据库 (文件模式)，生产用 MySQL
+- 表结构知识：文件方案 `table-meta/{table}.sql`（扁平目录，不按项目分子目录）
+- 统一使用 PostgreSQL 18 + pgvector 0.8.2（业务表 + 向量表共用一个数据库）
 - 前端开发代理：Vite `proxy /api -> http://localhost:8090`
 - **开发调试开关：**
   - `sentinel.dev.max-sql-per-scan` — 限制单次扫描处理的 SQL 数量（默认 -1 不限，dev 环境设为 50）
@@ -200,22 +280,59 @@ t_sql_analysis     -- 分析结果（通过 sql_record_id 关联 project_id）
 
 ---
 
-## DdlExporter 使用方法
+## DDL 采集方式
+
+### 方式一：DdlExporter（JDBC 直连，适用于开发环境）
 
 ```bash
-# 通过 Maven 运行（项目根目录下执行）
 mvn exec:java -pl sentinel-ai-server \
   -Dexec.mainClass=com.zhuangjie.sentinel.knowledge.DdlExporter \
-  "-Dexec.args=jdbc:mysql://host:3306/db?user=xxx&password=yyy table-meta/project-name"
+  "-Dexec.args=jdbc:mysql://host:3306/db?user=xxx&password=yyy table-meta"
 ```
 
-输出目录按项目维度组织：
+### 方式二：远程数据平台 API（可选，适用于生产环境/网络隔离场景）
+
+> **注意：** 数据平台为可选依赖。未配置时，用户可手动维护 DDL 文件，不影响 AI 分析等核心功能。
+
+```bash
+# 全量采集所有表的 DDL（分批处理，默认每批 30 张）
+curl -X POST http://localhost:8090/api/table-meta/remote-collect
+
+# 刷新已有表的 DDL（仅更新 table-meta 里已有的表，默认 limit=10）
+curl -X POST "http://localhost:8090/api/table-meta/refresh-ddl?limit=10"
+
+# 刷新已有表的索引统计（查询区分度、基数、选择性等，默认 limit=10）
+curl -X POST "http://localhost:8090/api/table-meta/refresh-index-stats?limit=10"
+
+# 检测本地 DDL 与线上差异（分批处理）
+curl http://localhost:8090/api/table-meta/detect-changes
+
+# 测试连接
+curl http://localhost:8090/api/table-meta/connection-test
+```
+
+**配置方式（在 `application-dev.yml` 中直接配置，该文件已在 `.gitignore` 中）：**
+```yaml
+sentinel:
+  data-platform:
+    enabled: true                              # 设为 false 则完全禁用远程平台功能
+    sso-url: https://your-sso-server.com
+    platform-url: https://your-data-platform.com
+    username: your-encrypted-username
+    password: your-encrypted-password
+    domain: your-rds-domain
+    database: your-database-name
+    collect-batch-size: 30                     # 每批处理表数量
+    diff-batch-size: 30
+```
+- 开源用户参考 `application-dev.yml.example` 填写自己的配置
+
+输出目录（扁平结构）：
 ```
 table-meta/
-└── collection-management/   # 929 张表的 DDL 文件
-    ├── t_case.sql
-    ├── t_case_cf.sql
-    └── ...
+├── t_case.sql           # 870 张表的 DDL 文件
+├── t_case_cf.sql
+└── ...
 ```
 
 ---
@@ -231,7 +348,7 @@ table-meta/
   - ✅ DdlExporter — 独立命令行工具，JDBC 连接 MySQL 拉取 SHOW CREATE TABLE + 行数估算
   - ✅ KnowledgeContextBuilder — 从 DDL 文件读取表结构，构建 AI Prompt 上下文（含分表智能匹配）
   - ✅ AiSqlAnalyzer — Prompt 注入表结构（DDL + 索引 + 数据量），精准分析
-  - ✅ 已导出 collection_data_dev 库表的 DDL（清理后 406 张业务表）
+  - ✅ 已导出目标库表的 DDL（清理后 406 张业务表）
 - **P5.1：** 移除本地规则引擎，全量 AI 分析 ← **✅ 已完成**
   - ✅ 删除 RuleBasedAnalyzer、AnalysisResult、rules/ 包下 6 条规则
   - ✅ ScanService 改为：所有 SQL → AI 分析（Caffeine 缓存避免重复调用）
@@ -256,10 +373,40 @@ table-meta/
   - ✅ 后端 AnalysisService：支持按项目 ID 关联 SqlRecord 筛选、按时间范围筛选
   - ✅ AnalysisDetailVo：新增 projectName 字段
   - ✅ updateHandleStatus 自动记录 handleTime
-- **P6：** RAG 业务知识库（保留规划）
-  - 用 RAG/向量数据库存储业务知识（SQL 业务背景、调用量、已知慢查询说明等）
-  - 与 P5 文件方案互补：文件存表结构（确定性），RAG 存业务知识（语义检索）
-- **P7：** 完善 Dashboard、通知、导出报告、开源准备
+- **P6：** RAG 业务知识库 ← **✅ 已完成**
+  - ✅ 技术选型：Spring AI (vanilla, 非 Alibaba) + 自定义 DashScope Embedding 适配器 + PGVector
+  - ✅ Docker 部署：`docker-compose.yml` 提供 PostgreSQL + pgvector 容器
+  - ✅ `DashScopeEmbeddingModel` — DashScope SDK TextEmbedding → Spring AI EmbeddingModel 适配器
+  - ✅ `RagConfig` — PG DataSource + JdbcTemplate + PgVectorStore（1024维，HNSW，余弦距离）
+  - ✅ `t_knowledge_entry` — 业务知识条目表，支持 5 种知识类型
+  - ✅ `KnowledgeRagService` — CRUD + 自动向量化 + 双重检索（精确匹配 + 语义搜索）
+  - ✅ `AiSqlAnalyzer` — Prompt 注入 RAG 检索结果（`## 相关业务知识`）
+  - ✅ `KnowledgeController` — REST API（CRUD、重新向量化、RAG 状态）
+  - ✅ 前端知识库管理页面（Knowledge.vue）— 列表/新增/编辑/删除/重新向量化
+  - ✅ 侧边栏导航新增「知识库」入口
+- **P7：** Git 远程仓库集成 + 远程平台生产环境 DDL 采集 + DDL 变更感知 ← **✅ 已完成**
+  - ✅ Git 远程仓库支持：`ProjectConfig` 新增 `gitRemoteUrl`/`gitBranch`/`webhookSecret` 字段
+  - ✅ `GitRepoManager` — 远程仓库 clone/pull 管理，`ScanService` 扫描前自动同步
+  - ✅ `WebhookController` — GitLab/GitHub Webhook 接收 + 签名校验 + 自动触发扫描
+  - ✅ `DataPlatformClient` — 远程数据平台 SSO 登录 + SQL 查询（Java 11 HttpClient，API 路径可配置）
+  - ✅ `RemoteDdlCollector` — 生产环境 DDL 分批采集 + 变更检测（默认每批 30 张表）
+  - ✅ 新增 `detectChanges()` — 对比本地 DDL 与线上 DDL，返回 changed/new/deleted 差异
+  - ✅ `DdlChangeService` — DDL 变更后自动重新分析受影响 SQL（@Async）
+  - ✅ 敏感信息配置在 `application-dev.yml`（已在 `.gitignore`），代码中不硬编码
+  - ✅ DDL 目录改为扁平结构 `table-meta/{table}.sql`（去掉 projectName 子目录）
+  - ✅ `KnowledgeContextBuilder.buildContext(sql)` 简化为无需 projectName 参数
+  - ✅ 数据库迁移：`t_project_config` 新增 `git_remote_url`/`git_branch`/`webhook_secret` 列
+- **P7.1：** DDL 刷新 + 索引统计 + 配置优化 + 安全审计 ← **✅ 已完成**
+  - ✅ `refreshDdl(limit)` — 刷新已有表的 DDL，支持 limit 参数（默认 10），保留已有索引统计区域
+  - ✅ `refreshIndexStats(limit)` — 查询 INFORMATION_SCHEMA.STATISTICS，采集索引区分度/基数/选择性，追加到 DDL 文件末尾
+  - ✅ DDL 文件新增 `-- === Index Statistics ===` 区域，记录每个索引的 Columns、Cardinality、Unique、Type、Selectivity
+  - ✅ 新增 `POST /api/table-meta/refresh-ddl?limit=10` 和 `POST /api/table-meta/refresh-index-stats?limit=10` 接口
+  - ✅ 数据平台改为**可选依赖**：`@ConditionalOnProperty` + `@Autowired(required = false)`，未配置时不影响其他功能
+  - ✅ 配置从环境变量改为 `application-dev.yml` 直接配置（该文件已在 `.gitignore` 中）
+  - ✅ 创建 `application-dev.yml.example` 供开源用户参考
+  - ✅ 安全审计：确认无密钥/token/公司信息泄露到 git 跟踪文件
+  - ✅ 详细调试日志：`[refreshDdl]`/`[refreshIndexStats]` 前缀，每步都有日志输出
+- **P8：** 完善 Dashboard、通知、导出报告、开源准备
 
 ---
 
@@ -269,11 +416,12 @@ table-meta/
 - **构建时设置：** `$env:JAVA_HOME = "$env:USERPROFILE\.jdks\jdk-21"` 然后 `mvn compile`
 - **后端端口：** 8090
 - **前端开发端口：** 5173（`npm run dev` in sentinel-ai-ui）
-- **H2 控制台：** http://localhost:8090/h2-console（dev 环境）
-- **数据库文件：** `./data/sentinel-ai.mv.db`（H2 文件模式）
-- **表结构 DDL 目录：** `table-meta/collection-management/`（清理后 406 张业务表）
+- **PostgreSQL：** `localhost:5432/sentinel_ai`（本地安装 PG18 + pgvector 0.8.2）
+- **建表脚本：** `src/main/resources/db/schema-pg.sql`（首次需手动执行）
+- **表结构 DDL 目录：** `table-meta/`（扁平目录，可通过远程数据平台采集或手动维护）
 - **launch.json：** 含 JVM UTF-8 参数 + `integratedTerminal` console 模式 + API Key 环境变量
 - **settings.json：** 终端自动 `chcp 65001`（UTF-8）+ java.debug.settings.vmArgs
+- **Git 仓库克隆目录：** `${user.home}/.sentinel-ai/repos/`（通过 `sentinel.git.clone-base-dir` 配置）
 
 ---
 
@@ -284,6 +432,14 @@ table-meta/
 - 代码和注释中不涉及公司内部信息
 - 新对话框中可用 `@sentinel-ai-project` 引用此规则文件获取完整项目上下文
 - **AI SDK：** 已从 `spring-ai-alibaba-starter-dashscope` 迁移至 `dashscope-sdk-java`（DashScope 原生 SDK）
-  - 使用 `MultiModalConversation` 接口，支持 `qwen3.5-plus` 等所有新模型
-  - 不再依赖 Spring AI 框架，减少依赖链和版本冲突
+  - Chat：`MultiModalConversation` 接口，支持 `qwen3.5-plus` 等所有新模型
+  - Embedding：`TextEmbedding` 接口，`text-embedding-v3`（1024 维）
+  - Spring AI (vanilla)：仅用于 PgVectorStore（不引入 Spring AI Alibaba，避免自动配置冲突）
 - **日志编码：** Windows 环境需 `logback-spring.xml` 设 charset=UTF-8 + JVM 参数 `-Dsun.stdout.encoding=UTF-8`；通过 F5/launch.json 启动应用以确保参数生效
+- **敏感信息规则：** 
+  - `application-dev.yml` 包含实际凭据（数据库密码、平台账密等），已在 `.gitignore` 中，不会被推送
+  - `application-dev.yml.example` 为模板文件（含占位符），已被 git 跟踪，供开源用户参考
+  - `.vscode/launch.json` 含 API Key，通过 `.vscode/` 规则被 `.gitignore` 排除
+  - AI API Key 仍通过环境变量 `AI_DASHSCOPE_API_KEY` 注入
+  - 代码中无硬编码密钥/公司信息
+- **Maven 本地仓库：** `E:\apache-maven-3.9.9\repo`（非默认 `~/.m2`，通过 settings.xml 配置）

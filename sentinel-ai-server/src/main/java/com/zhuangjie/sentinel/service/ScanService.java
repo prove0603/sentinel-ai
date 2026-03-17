@@ -14,6 +14,7 @@ import com.zhuangjie.sentinel.db.service.SqlRecordDbService;
 import com.zhuangjie.sentinel.delta.ComparisonResult;
 import com.zhuangjie.sentinel.delta.DeltaResult;
 import com.zhuangjie.sentinel.delta.GitDeltaDetector;
+import com.zhuangjie.sentinel.delta.GitRepoManager;
 import com.zhuangjie.sentinel.delta.SqlHashComparator;
 import com.zhuangjie.sentinel.pojo.dto.ScannedSql;
 import com.zhuangjie.sentinel.pojo.dto.SqlRiskAssessment;
@@ -52,6 +53,7 @@ public class ScanService {
     private final QueryWrapperScanner queryWrapperScanner;
     private final AiSqlAnalyzer aiSqlAnalyzer;
     private final GitDeltaDetector gitDeltaDetector;
+    private final GitRepoManager gitRepoManager;
     private final SqlHashComparator sqlHashComparator;
 
     @Value("${sentinel.ai.max-ai-calls-per-scan:-1}")
@@ -67,7 +69,14 @@ public class ScanService {
             throw new IllegalArgumentException("Project not found: " + projectId);
         }
 
-        Path projectRoot = Path.of(project.getGitRepoPath());
+        Path projectRoot;
+        try {
+            projectRoot = gitRepoManager.syncRepo(project);
+        } catch (Exception e) {
+            log.error("Failed to sync git repo for project {}: {}", project.getProjectName(), e.getMessage());
+            throw new RuntimeException("Git sync failed: " + e.getMessage(), e);
+        }
+
         String headCommit = gitDeltaDetector.resolveHead(projectRoot);
 
         boolean isFullScan = forceFullScan

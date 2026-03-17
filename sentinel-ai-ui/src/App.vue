@@ -28,6 +28,10 @@
           <el-icon><Warning /></el-icon>
           <span>SQL 分析</span>
         </el-menu-item>
+        <el-menu-item index="/knowledge">
+          <el-icon><Collection /></el-icon>
+          <span>知识库</span>
+        </el-menu-item>
       </el-menu>
     </el-aside>
     <el-main class="app-main">

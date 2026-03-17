@@ -78,3 +78,16 @@ CREATE TABLE IF NOT EXISTS t_sql_analysis (
     handle_time             DATETIME,
     create_time             DATETIME DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS t_knowledge_entry (
+    id                  BIGINT AUTO_INCREMENT PRIMARY KEY,
+    knowledge_type      VARCHAR(30) NOT NULL,
+    title               VARCHAR(200) NOT NULL,
+    content             CLOB NOT NULL,
+    related_tables      VARCHAR(500),
+    source              VARCHAR(20) DEFAULT 'MANUAL',
+    embedded            TINYINT DEFAULT 0,
+    status              TINYINT DEFAULT 1,
+    create_time         DATETIME DEFAULT CURRENT_TIMESTAMP,
+    update_time         DATETIME DEFAULT CURRENT_TIMESTAMP
+);

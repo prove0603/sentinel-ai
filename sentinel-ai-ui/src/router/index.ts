@@ -24,6 +24,16 @@ const router = createRouter({
       component: () => import('../views/Analysis.vue')
     },
     {
+      path: '/table-meta',
+      name: 'TableMeta',
+      component: () => import('../views/TableMeta.vue')
+    },
+    {
+      path: '/git',
+      name: 'GitIntegration',
+      component: () => import('../views/GitIntegration.vue')
+    },
+    {
       path: '/knowledge',
       name: 'Knowledge',
       component: () => import('../views/Knowledge.vue')

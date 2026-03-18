@@ -35,6 +35,10 @@ sentinel:
     collect-batch-size: 30
     diff-batch-size: 30
   git:
+    # NONE / GITLAB / GITHUB — set to your Git platform
+    platform: NONE
+    api-url: https://your-gitlab-instance.com
+    access-token: your-personal-access-token
     clone-base-dir: ${user.home}/.sentinel-ai/repos
   dev:
     max-sql-per-scan: 50

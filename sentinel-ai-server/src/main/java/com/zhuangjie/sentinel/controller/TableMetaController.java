@@ -37,7 +37,7 @@ public class TableMetaController {
      * @param limit max tables to process (-1 = no limit, default 10 for testing)
      */
     @PostMapping("/refresh-ddl")
-    public Result<Map<String, Object>> refreshDdl(@RequestParam(defaultValue = "10") int limit) {
+    public Result<Map<String, Object>> refreshDdl(@RequestParam(defaultValue = "-1") int limit) {
         if (remoteDdlCollector == null) {
             return Result.fail(PLATFORM_NOT_CONFIGURED);
         }
@@ -62,7 +62,7 @@ public class TableMetaController {
      * @param limit max tables to process (-1 = no limit, default 10 for testing)
      */
     @PostMapping("/refresh-index-stats")
-    public Result<Map<String, Object>> refreshIndexStats(@RequestParam(defaultValue = "10") int limit) {
+    public Result<Map<String, Object>> refreshIndexStats(@RequestParam(defaultValue = "-1") int limit) {
         if (remoteDdlCollector == null) {
             return Result.fail(PLATFORM_NOT_CONFIGURED);
         }

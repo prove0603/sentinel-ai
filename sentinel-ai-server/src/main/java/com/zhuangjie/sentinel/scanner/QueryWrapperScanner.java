@@ -150,6 +150,7 @@ public class QueryWrapperScanner implements SqlScanner {
 
             boolean isLambda = LAMBDA_WRAPPERS.contains(typeName);
             WrapperUsage usage = new WrapperUsage(typeName, isLambda);
+            usage.entityName = extractGenericTypeName(creation.getType());
 
             Expression current = creation;
             while (current.getParentNode().isPresent()
@@ -197,7 +198,12 @@ public class QueryWrapperScanner implements SqlScanner {
             }
 
             boolean isLambda = LAMBDA_WRAPPERS.contains(typeName);
-            variableMap.put(varDecl.getNameAsString(), new WrapperUsage(typeName, isLambda));
+            WrapperUsage wu = new WrapperUsage(typeName, isLambda);
+            // Extract entity type from generic: QueryWrapper<Queue> → Queue
+            if (varDecl.getType() instanceof ClassOrInterfaceType classType) {
+                wu.entityName = extractGenericTypeName(classType);
+            }
+            variableMap.put(varDecl.getNameAsString(), wu);
         });
 
         if (variableMap.isEmpty()) {
@@ -328,7 +334,36 @@ public class QueryWrapperScanner implements SqlScanner {
         if (expr instanceof MethodReferenceExpr ref) {
             return methodRefToColumnName(ref.getIdentifier());
         }
+        // Handle constant references like Queue.COUNTRY_ID or Queue.queueCode
+        if (expr instanceof FieldAccessExpr fieldAccess) {
+            return resolveFieldName(fieldAccess.getNameAsString());
+        }
+        // Handle simple variable references like COLUMN_NAME
+        if (expr instanceof NameExpr nameExpr) {
+            String name = nameExpr.getNameAsString();
+            return resolveFieldName(name);
+        }
         return "_unknown_col";
+    }
+
+    /**
+     * Resolves a Java field name (constant or variable) to a DB column name.
+     * UPPER_SNAKE_CASE (e.g. COUNTRY_ID) → lower (country_id)
+     * camelCase (e.g. countryId) → snake_case (country_id)
+     * already_snake (e.g. country_id) → as-is
+     */
+    static String resolveFieldName(String name) {
+        if (name == null || name.isEmpty()) return "_unknown_col";
+        // UPPER_SNAKE_CASE constant like COUNTRY_ID, QUEUE_CODE
+        if (name.equals(name.toUpperCase()) && name.contains("_")) {
+            return name.toLowerCase();
+        }
+        // Already lowercase snake_case
+        if (name.equals(name.toLowerCase()) && name.contains("_")) {
+            return name;
+        }
+        // CamelCase → snake_case
+        return camelToSnakeCase(name);
     }
 
     /**
@@ -361,16 +396,17 @@ public class QueryWrapperScanner implements SqlScanner {
     private String buildPseudoSql(WrapperUsage usage) {
         StringBuilder sql = new StringBuilder();
         boolean isUpdate = UPDATE_WRAPPERS.contains(usage.wrapperType);
+        String tableName = resolveTableName(usage.entityName);
 
         if (isUpdate) {
-            sql.append("UPDATE _unknown SET _col = ?");
+            sql.append("UPDATE ").append(tableName).append(" SET _col = ?");
         } else {
             if (!usage.selectColumns.isEmpty()) {
                 sql.append("SELECT ").append(String.join(", ", usage.selectColumns));
             } else {
                 sql.append("SELECT *");
             }
-            sql.append(" FROM _unknown");
+            sql.append(" FROM ").append(tableName);
         }
 
         if (!usage.conditions.isEmpty()) {
@@ -398,18 +434,66 @@ public class QueryWrapperScanner implements SqlScanner {
 
     // ==================== Utility Methods ====================
 
+    /**
+     * Detects if the first argument is a boolean condition parameter.
+     * MyBatis-Plus overloads: eq(boolean condition, R column, Object val) vs eq(R column, Object val).
+     * Strategy: determine by argument count — condition methods expect 3 args with bool prefix, 2 without.
+     * Also checks expression type heuristics for ambiguous cases.
+     */
     private boolean hasLeadingBooleanParam(List<Expression> args) {
-        if (args.isEmpty()) {
+        if (args.size() < 2) {
             return false;
         }
         Expression first = args.get(0);
-        return first instanceof BooleanLiteralExpr
-                || first instanceof NameExpr
-                || first instanceof MethodCallExpr;
+        if (first instanceof BooleanLiteralExpr) {
+            return true;
+        }
+        // Binary expressions like (x != null), (x > 0) are boolean conditions
+        if (first instanceof BinaryExpr) {
+            return true;
+        }
+        // Unary expression like !flag
+        if (first instanceof UnaryExpr) {
+            return true;
+        }
+        // Enclosed expression like (condition)
+        if (first instanceof EnclosedExpr) {
+            return true;
+        }
+        // For MethodCallExpr and NameExpr, use arg count as heuristic:
+        // 3+ args and first is MethodCallExpr/NameExpr → likely boolean prefix
+        if (args.size() >= 3 && (first instanceof MethodCallExpr || first instanceof NameExpr)) {
+            return true;
+        }
+        return false;
     }
 
     private String extractSimpleTypeName(ClassOrInterfaceType type) {
         return type.getNameAsString();
+    }
+
+    /**
+     * Extracts the generic type parameter name from QueryWrapper&lt;Queue&gt; → "Queue".
+     */
+    private String extractGenericTypeName(ClassOrInterfaceType type) {
+        return type.getTypeArguments()
+                .filter(args -> !args.isEmpty())
+                .map(args -> args.get(0))
+                .filter(ClassOrInterfaceType.class::isInstance)
+                .map(t -> ((ClassOrInterfaceType) t).getNameAsString())
+                .orElse(null);
+    }
+
+    /**
+     * Converts entity class name to table name with "t_" prefix.
+     * Queue → t_queue, CaseInfo → t_case_info
+     */
+    private String resolveTableName(String entityName) {
+        if (entityName == null || entityName.isEmpty()) {
+            return "_unknown";
+        }
+        String snake = camelToSnakeCase(entityName);
+        return "t_" + snake;
     }
 
     private String extractTypeFromDeclarator(VariableDeclarator varDecl) {
@@ -450,6 +534,7 @@ public class QueryWrapperScanner implements SqlScanner {
         String lastClause;
         String havingClause;
         boolean hasDynamicConditions;
+        String entityName;
 
         WrapperUsage(String wrapperType, boolean isLambda) {
             this.wrapperType = wrapperType;

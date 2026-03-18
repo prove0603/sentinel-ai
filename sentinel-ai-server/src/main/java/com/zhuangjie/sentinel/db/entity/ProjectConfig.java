@@ -26,6 +26,9 @@ public class ProjectConfig {
     /** Webhook secret for verifying push events */
     private String webhookSecret;
 
+    /** Project path on Git platform: GitLab "group/repo", GitHub "owner/repo" */
+    private String gitProjectPath;
+
     private String lastScanCommit;
 
     private LocalDateTime lastScanTime;

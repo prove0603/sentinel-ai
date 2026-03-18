@@ -23,7 +23,11 @@ export const projectApi = {
   get: (id: number) => api.get(`/project/${id}`),
   create: (data: any) => api.post('/project', data),
   update: (data: any) => api.put('/project', data),
-  delete: (id: number) => api.delete(`/project/${id}`)
+  delete: (id: number) => api.delete(`/project/${id}`),
+  checkRepo: (id: number) => api.get(`/project/check-repo/${id}`),
+  checkRepoPath: (path: string) => api.get('/project/check-repo-path', { params: { path } }),
+  clone: (id: number) => api.post(`/project/clone/${id}`, null, { timeout: 300000 }),
+  clonePathPreview: (projectName: string) => api.get('/project/clone-path-preview', { params: { projectName } }),
 }
 
 export const scanApi = {
@@ -40,6 +44,25 @@ export const analysisApi = {
   detail: (id: number) => api.get(`/analysis/${id}`),
   handle: (id: number, status: string, note?: string) =>
     api.put(`/analysis/${id}/handle`, null, { params: { status, note } })
+}
+
+export const tableMetaApi = {
+  refreshDdl: (limit: number = -1) =>
+    api.post('/table-meta/refresh-ddl', null, { params: { limit }, timeout: 600000 }),
+  refreshIndexStats: (limit: number = -1) =>
+    api.post('/table-meta/refresh-index-stats', null, { params: { limit }, timeout: 600000 }),
+  list: () => api.get('/table-meta/list'),
+  connectionTest: () => api.get('/table-meta/connection-test'),
+}
+
+export const gitApi = {
+  config: () => api.get('/git/config'),
+  branches: (projectId: number) => api.get(`/git/branches/${projectId}`),
+  commits: (projectId: number, branch: string, limit: number = 20) =>
+    api.get(`/git/commits/${projectId}`, { params: { branch, limit } }),
+  diff: (projectId: number, from: string, to: string) =>
+    api.get(`/git/diff/${projectId}`, { params: { from, to } }),
+  test: (projectId: number) => api.get(`/git/test/${projectId}`),
 }
 
 export const knowledgeApi = {

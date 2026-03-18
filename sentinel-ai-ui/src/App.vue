@@ -28,6 +28,14 @@
           <el-icon><Warning /></el-icon>
           <span>SQL 分析</span>
         </el-menu-item>
+        <el-menu-item index="/git">
+          <el-icon><Connection /></el-icon>
+          <span>代码变更</span>
+        </el-menu-item>
+        <el-menu-item index="/table-meta">
+          <el-icon><Grid /></el-icon>
+          <span>表结构管理</span>
+        </el-menu-item>
         <el-menu-item index="/knowledge">
           <el-icon><Collection /></el-icon>
           <span>知识库</span>

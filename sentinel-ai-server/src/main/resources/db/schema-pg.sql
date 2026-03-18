@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS t_project_config (
     git_remote_url  VARCHAR(500),
     git_branch      VARCHAR(100) DEFAULT 'master',
     webhook_secret  VARCHAR(200),
+    git_project_path VARCHAR(200),
     last_scan_commit VARCHAR(64),
     last_scan_time  TIMESTAMP,
     table_schema_source VARCHAR(20) DEFAULT 'MANUAL',
@@ -21,11 +22,13 @@ CREATE TABLE IF NOT EXISTS t_project_config (
     update_time     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Migration: add git_remote_url, git_branch, webhook_secret to existing table
+-- Migration: add git integration fields
 -- ALTER TABLE t_project_config ADD COLUMN IF NOT EXISTS git_remote_url VARCHAR(500);
 -- ALTER TABLE t_project_config ADD COLUMN IF NOT EXISTS git_branch VARCHAR(100) DEFAULT 'master';
 -- ALTER TABLE t_project_config ADD COLUMN IF NOT EXISTS webhook_secret VARCHAR(200);
 -- ALTER TABLE t_project_config ALTER COLUMN git_repo_path DROP NOT NULL;
+-- ALTER TABLE t_project_config ADD COLUMN IF NOT EXISTS git_project_path VARCHAR(200);
+-- (git_platform/git_api_url/git_access_token moved to global config file sentinel.git.*)
 
 CREATE TABLE IF NOT EXISTS t_table_meta (
     id              BIGSERIAL PRIMARY KEY,

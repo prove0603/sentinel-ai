@@ -1,0 +1,22 @@
+---
+description: Sentinel AI 部署与前端更新流程
+globs: "**/sentinel-ai/**"
+alwaysApply: false
+---
+
+# 部署流程
+
+当前端代码有任何修改（Vue 组件、样式、路由等）后，需要执行以下步骤才能让变更在生产部署中生效：
+
+## 更新步骤
+
+1. **构建前端**：`cd sentinel-ai-ui && npm run build`
+2. **同步资源到 target**：`mvn resources:resources -pl sentinel-ai-server`（或 `mvn compile -pl sentinel-ai-server`）
+3. **重启后端**（Cursor 中 Shift+F5 停止，F5 启动）
+
+## 局域网访问
+
+- 后端端口：8090，绑定 0.0.0.0
+- 同事访问地址：`http://<本机内网IP>:8090`
+- 前端产物由 Spring Boot 静态资源提供，无需单独部署前端
+- Windows 防火墙需放行 8090 端口

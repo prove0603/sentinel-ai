@@ -1,7 +1,7 @@
 ---
-description: Sentinel AI 项目的设计方案、技术决策和上下文，在处理该项目相关任务时自动应用
-globs: 
-alwaysApply: true
+description: Sentinel AI 项目的设计方案、技术决策和上下文
+globs: "**/sentinel-ai/**"
+alwaysApply: false
 ---
 
 # Sentinel AI — 项目设计文档

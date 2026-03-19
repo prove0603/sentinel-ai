@@ -6,8 +6,8 @@
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
-    "noEmit": true,
     "composite": true,
+    "emitDeclarationOnly": true,
     "skipLibCheck": true,
     "lib": ["ES2022"]
   },

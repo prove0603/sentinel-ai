@@ -83,8 +83,25 @@ public class QueryWrapperScanner implements SqlScanner {
         return doScan(projectRoot, javaFiles);
     }
 
+    /**
+     * Scans a raw Java code snippet (not a file) for QueryWrapper/LambdaQueryWrapper usage.
+     * Used for testing and debugging pseudo-SQL generation.
+     */
+    public List<ScannedSql> scanCodeSnippet(String javaCode) {
+        List<ScannedSql> results = new ArrayList<>();
+        try {
+            CompilationUnit cu = StaticJavaParser.parse(javaCode);
+            Map<String, String> tableNameMap = buildTableNameMap(cu);
+            extractWrapperSql(cu, "snippet", results, tableNameMap);
+        } catch (Exception e) {
+            log.error("Failed to parse code snippet", e);
+        }
+        return results;
+    }
+
     private List<ScannedSql> doScan(Path projectRoot, List<Path> javaFiles) {
         List<ScannedSql> results = new ArrayList<>();
+        Map<String, String> tableNameMap = buildTableNameMapFromFiles(projectRoot, javaFiles);
 
         for (Path javaFile : javaFiles) {
             if (!Files.exists(javaFile)) {
@@ -93,7 +110,7 @@ public class QueryWrapperScanner implements SqlScanner {
             try {
                 CompilationUnit cu = StaticJavaParser.parse(javaFile);
                 String relativePath = projectRoot.relativize(javaFile).toString().replace('\\', '/');
-                extractWrapperSql(cu, relativePath, results);
+                extractWrapperSql(cu, relativePath, results, tableNameMap);
             } catch (Exception e) {
                 log.debug("QueryWrapperScanner skipping file (parse error): {}", javaFile);
             }
@@ -103,7 +120,8 @@ public class QueryWrapperScanner implements SqlScanner {
         return results;
     }
 
-    private void extractWrapperSql(CompilationUnit cu, String relativePath, List<ScannedSql> results) {
+    private void extractWrapperSql(CompilationUnit cu, String relativePath, List<ScannedSql> results,
+                                    Map<String, String> tableNameMap) {
         cu.findAll(MethodDeclaration.class).forEach(method -> {
             String className = method.findAncestor(ClassOrInterfaceDeclaration.class)
                     .map(ClassOrInterfaceDeclaration::getNameAsString)
@@ -115,7 +133,7 @@ public class QueryWrapperScanner implements SqlScanner {
             collectVariableBasedUsages(method, usages);
 
             for (WrapperUsage usage : usages) {
-                String pseudoSql = buildPseudoSql(usage);
+                String pseudoSql = buildPseudoSql(usage, tableNameMap);
                 if (pseudoSql.isBlank()) {
                     continue;
                 }
@@ -152,12 +170,21 @@ public class QueryWrapperScanner implements SqlScanner {
             WrapperUsage usage = new WrapperUsage(typeName, isLambda);
             usage.entityName = extractGenericTypeName(creation.getType());
 
+            // Diamond operator fallback: try to resolve from variable declaration type
+            if (usage.entityName == null) {
+                usage.entityName = resolveEntityFromContext(creation);
+            }
+
             Expression current = creation;
             while (current.getParentNode().isPresent()
                     && current.getParentNode().get() instanceof MethodCallExpr parentCall
                     && parentCall.getScope().isPresent()
                     && parentCall.getScope().get() == current) {
                 processMethodCall(parentCall, usage);
+                // Try to infer entity name from lambda method reference scope (e.g. User::getName → User)
+                if (usage.entityName == null && isLambda) {
+                    usage.entityName = inferEntityFromMethodRef(parentCall);
+                }
                 current = parentCall;
             }
 
@@ -217,6 +244,9 @@ public class QueryWrapperScanner implements SqlScanner {
                     WrapperUsage usage = variableMap.get(varName);
                     if (usage != null) {
                         processMethodCall(call, usage);
+                        if (usage.entityName == null && usage.isLambda) {
+                            usage.entityName = inferEntityFromMethodRef(call);
+                        }
                     }
                 }
             });
@@ -246,6 +276,10 @@ public class QueryWrapperScanner implements SqlScanner {
             processApplyCall(call, usage);
         } else if ("having".equals(methodName)) {
             processHavingCall(call, usage);
+        } else if ("set".equals(methodName)) {
+            processSetCall(call, usage);
+        } else if ("setSql".equals(methodName)) {
+            processSetSqlCall(call, usage);
         }
     }
 
@@ -260,7 +294,9 @@ public class QueryWrapperScanner implements SqlScanner {
             return;
         }
 
-        String column = extractColumnName(args.get(columnArgIndex), usage.isLambda);
+        Expression columnArg = args.get(columnArgIndex);
+        String column = extractColumnName(columnArg, usage.isLambda);
+        tryInferEntityFromColumnArg(columnArg, usage);
         String condition = String.format(template, column);
 
         if (hasConditionParam) {
@@ -272,6 +308,7 @@ public class QueryWrapperScanner implements SqlScanner {
     private void processSelectCall(MethodCallExpr call, WrapperUsage usage) {
         for (Expression arg : call.getArguments()) {
             String col = extractColumnName(arg, usage.isLambda);
+            tryInferEntityFromColumnArg(arg, usage);
             if (!"_unknown_col".equals(col)) {
                 usage.selectColumns.add(col);
             }
@@ -285,6 +322,7 @@ public class QueryWrapperScanner implements SqlScanner {
                 continue;
             }
             String col = extractColumnName(arg, usage.isLambda);
+            tryInferEntityFromColumnArg(arg, usage);
             usage.orderByClauses.add(col + " " + direction);
         }
     }
@@ -292,6 +330,7 @@ public class QueryWrapperScanner implements SqlScanner {
     private void processGroupByCall(MethodCallExpr call, WrapperUsage usage) {
         for (Expression arg : call.getArguments()) {
             String col = extractColumnName(arg, usage.isLambda);
+            tryInferEntityFromColumnArg(arg, usage);
             if (!"_unknown_col".equals(col)) {
                 usage.groupByClauses.add(col);
             }
@@ -325,6 +364,68 @@ public class QueryWrapperScanner implements SqlScanner {
         }
     }
 
+    /**
+     * Handles UpdateWrapper.set(column, value) and set(condition, column, value).
+     */
+    private void processSetCall(MethodCallExpr call, WrapperUsage usage) {
+        List<Expression> args = call.getArguments();
+        boolean hasConditionParam = hasLeadingBooleanParam(args);
+        int columnArgIndex = hasConditionParam ? 1 : 0;
+        if (columnArgIndex >= args.size()) {
+            return;
+        }
+        Expression columnArg = args.get(columnArgIndex);
+        String column = extractColumnName(columnArg, usage.isLambda);
+        tryInferEntityFromColumnArg(columnArg, usage);
+        usage.setClauses.add(column + " = ?");
+        if (hasConditionParam) {
+            usage.hasDynamicConditions = true;
+        }
+    }
+
+    /**
+     * Handles UpdateWrapper.setSql(rawSql) and setSql(condition, rawSql).
+     */
+    private void processSetSqlCall(MethodCallExpr call, WrapperUsage usage) {
+        List<Expression> args = call.getArguments();
+        int sqlArgIndex = hasLeadingBooleanParam(args) ? 1 : 0;
+        if (sqlArgIndex < args.size() && args.get(sqlArgIndex) instanceof StringLiteralExpr str) {
+            usage.setClauses.add(str.getValue().replaceAll("\\{\\d+}", "?"));
+        }
+    }
+
+    // ==================== Entity Inference ====================
+
+    /**
+     * Infers entityName from column argument when generic type is unavailable (raw QueryWrapper).
+     * <p>Strategies:
+     * <ol>
+     *   <li>FieldAccessExpr: {@code wrapper.eq(ServiceChannelConfig.SERVICE_CHANNEL_ID, value)} → "ServiceChannelConfig"</li>
+     *   <li>NameExpr with static import: {@code wrapper.eq(NAME, value)} where NAME is statically imported from UserCollector → "UserCollector"</li>
+     * </ol>
+     */
+    private void tryInferEntityFromColumnArg(Expression expr, WrapperUsage usage) {
+        if (usage.entityName != null) {
+            return;
+        }
+        if (expr instanceof FieldAccessExpr fieldAccess) {
+            Expression scope = fieldAccess.getScope();
+            if (scope instanceof NameExpr nameExpr) {
+                String className = nameExpr.getNameAsString();
+                if (Character.isUpperCase(className.charAt(0)) && !COMMON_UTILITY_CLASSES.contains(className)) {
+                    usage.entityName = className;
+                }
+            }
+        }
+    }
+
+    private static final Set<String> COMMON_UTILITY_CLASSES = Set.of(
+            "Objects", "Collections", "Arrays", "Math", "String",
+            "System", "Integer", "Long", "Boolean", "Double", "Float",
+            "Optional", "Stream", "Collectors", "List", "Map", "Set",
+            "StringUtils", "CollectionUtils", "ObjectUtils", "BeanUtils"
+    );
+
     // ==================== Column Name Extraction ====================
 
     private String extractColumnName(Expression expr, boolean isLambda) {
@@ -349,13 +450,14 @@ public class QueryWrapperScanner implements SqlScanner {
     /**
      * Resolves a Java field name (constant or variable) to a DB column name.
      * UPPER_SNAKE_CASE (e.g. COUNTRY_ID) → lower (country_id)
+     * UPPER (e.g. ID) → lower (id)
      * camelCase (e.g. countryId) → snake_case (country_id)
      * already_snake (e.g. country_id) → as-is
      */
     static String resolveFieldName(String name) {
         if (name == null || name.isEmpty()) return "_unknown_col";
-        // UPPER_SNAKE_CASE constant like COUNTRY_ID, QUEUE_CODE
-        if (name.equals(name.toUpperCase()) && name.contains("_")) {
+        // All uppercase: COUNTRY_ID → country_id, ID → id
+        if (name.equals(name.toUpperCase())) {
             return name.toLowerCase();
         }
         // Already lowercase snake_case
@@ -393,13 +495,18 @@ public class QueryWrapperScanner implements SqlScanner {
 
     // ==================== Pseudo-SQL Building ====================
 
-    private String buildPseudoSql(WrapperUsage usage) {
+    private String buildPseudoSql(WrapperUsage usage, Map<String, String> tableNameMap) {
         StringBuilder sql = new StringBuilder();
         boolean isUpdate = UPDATE_WRAPPERS.contains(usage.wrapperType);
-        String tableName = resolveTableName(usage.entityName);
+        String tableName = resolveTableName(usage.entityName, tableNameMap);
 
         if (isUpdate) {
-            sql.append("UPDATE ").append(tableName).append(" SET _col = ?");
+            sql.append("UPDATE ").append(tableName).append(" SET ");
+            if (!usage.setClauses.isEmpty()) {
+                sql.append(String.join(", ", usage.setClauses));
+            } else {
+                sql.append("_col = ?");
+            }
         } else {
             if (!usage.selectColumns.isEmpty()) {
                 sql.append("SELECT ").append(String.join(", ", usage.selectColumns));
@@ -485,12 +592,15 @@ public class QueryWrapperScanner implements SqlScanner {
     }
 
     /**
-     * Converts entity class name to table name with "t_" prefix.
-     * Queue → t_queue, CaseInfo → t_case_info
+     * Resolves entity class name to table name.
+     * Priority: @TableName annotation mapping > "t_" + snake_case convention.
      */
-    private String resolveTableName(String entityName) {
+    private String resolveTableName(String entityName, Map<String, String> tableNameMap) {
         if (entityName == null || entityName.isEmpty()) {
             return "_unknown";
+        }
+        if (tableNameMap != null && tableNameMap.containsKey(entityName)) {
+            return tableNameMap.get(entityName);
         }
         String snake = camelToSnakeCase(entityName);
         return "t_" + snake;
@@ -522,6 +632,99 @@ public class QueryWrapperScanner implements SqlScanner {
                 .orElse(false);
     }
 
+    // ==================== Entity & Table Name Resolution ====================
+
+    /**
+     * Infers entity name from a lambda method reference argument in a wrapper chain call.
+     * E.g., {@code .eq(User::getName, val)} → scope "User" is the entity.
+     */
+    private String inferEntityFromMethodRef(MethodCallExpr call) {
+        for (Expression arg : call.getArguments()) {
+            if (arg instanceof MethodReferenceExpr ref) {
+                Expression scope = ref.getScope();
+                if (scope instanceof TypeExpr typeExpr
+                        && typeExpr.getType() instanceof ClassOrInterfaceType classType) {
+                    return classType.getNameAsString();
+                }
+                if (scope instanceof NameExpr nameExpr) {
+                    return nameExpr.getNameAsString();
+                }
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Resolves entity name from the context when diamond operator is used.
+     * E.g., {@code QueryWrapper<CaseBill> wrapper = new QueryWrapper<>()} → "CaseBill"
+     * Also handles: {@code mapper.selectList(new QueryWrapper<>()...)} by checking mapper's generic type.
+     */
+    private String resolveEntityFromContext(ObjectCreationExpr creation) {
+        // Case 1: variable declaration — QueryWrapper<Entity> w = new QueryWrapper<>()
+        if (creation.getParentNode().isPresent()
+                && creation.getParentNode().get() instanceof VariableDeclarator varDecl) {
+            if (varDecl.getType() instanceof ClassOrInterfaceType classType) {
+                return extractGenericTypeName(classType);
+            }
+        }
+        // Case 2: assignment — w = new QueryWrapper<>() where w was declared with type
+        if (creation.getParentNode().isPresent()
+                && creation.getParentNode().get() instanceof AssignExpr) {
+            // Hard to resolve without symbol table; skip
+            return null;
+        }
+        return null;
+    }
+
+    /**
+     * Builds entity-name → table-name mapping from @TableName annotations in a compilation unit.
+     */
+    private Map<String, String> buildTableNameMap(CompilationUnit cu) {
+        Map<String, String> map = new HashMap<>();
+        cu.findAll(ClassOrInterfaceDeclaration.class).forEach(clazz ->
+                extractTableNameAnnotation(clazz, map));
+        return map;
+    }
+
+    /**
+     * Builds entity-name → table-name mapping by scanning all Java files for @TableName annotations.
+     */
+    private Map<String, String> buildTableNameMapFromFiles(Path projectRoot, List<Path> javaFiles) {
+        Map<String, String> map = new HashMap<>();
+        for (Path javaFile : javaFiles) {
+            if (!Files.exists(javaFile)) continue;
+            try {
+                CompilationUnit cu = StaticJavaParser.parse(javaFile);
+                cu.findAll(ClassOrInterfaceDeclaration.class).forEach(clazz ->
+                        extractTableNameAnnotation(clazz, map));
+            } catch (Exception e) {
+                // skip parse errors
+            }
+        }
+        log.info("QueryWrapperScanner resolved {} @TableName mappings", map.size());
+        return map;
+    }
+
+    private void extractTableNameAnnotation(ClassOrInterfaceDeclaration clazz, Map<String, String> map) {
+        clazz.getAnnotationByName("TableName").ifPresent(ann -> {
+            String tableName = null;
+            if (ann instanceof SingleMemberAnnotationExpr singleAnn
+                    && singleAnn.getMemberValue() instanceof StringLiteralExpr str) {
+                tableName = str.getValue();
+            } else if (ann instanceof NormalAnnotationExpr normalAnn) {
+                tableName = normalAnn.getPairs().stream()
+                        .filter(p -> "value".equals(p.getNameAsString()))
+                        .findFirst()
+                        .filter(p -> p.getValue() instanceof StringLiteralExpr)
+                        .map(p -> ((StringLiteralExpr) p.getValue()).getValue())
+                        .orElse(null);
+            }
+            if (tableName != null && !tableName.isEmpty()) {
+                map.put(clazz.getNameAsString(), tableName);
+            }
+        });
+    }
+
     // ==================== Inner Class ====================
 
     private static class WrapperUsage {
@@ -531,6 +734,7 @@ public class QueryWrapperScanner implements SqlScanner {
         final List<String> selectColumns = new ArrayList<>();
         final List<String> orderByClauses = new ArrayList<>();
         final List<String> groupByClauses = new ArrayList<>();
+        final List<String> setClauses = new ArrayList<>();
         String lastClause;
         String havingClause;
         boolean hasDynamicConditions;
@@ -544,6 +748,7 @@ public class QueryWrapperScanner implements SqlScanner {
         boolean hasContent() {
             return !conditions.isEmpty() || !selectColumns.isEmpty()
                     || !orderByClauses.isEmpty() || !groupByClauses.isEmpty()
+                    || !setClauses.isEmpty()
                     || lastClause != null || havingClause != null;
         }
     }

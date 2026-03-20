@@ -65,6 +65,10 @@ export const gitApi = {
   test: (projectId: number) => api.get(`/git/test/${projectId}`),
 }
 
+export const sqlRecordApi = {
+  page: (params: any) => api.get('/sql-record/page', { params }),
+}
+
 export const knowledgeApi = {
   page: (params: any) => api.get('/knowledge/page', { params }),
   list: () => api.get('/knowledge/list'),

@@ -59,6 +59,12 @@ CREATE TABLE IF NOT EXISTS t_sql_record (
     update_time     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE INDEX IF NOT EXISTS idx_sql_record_project_status ON t_sql_record (project_id, status);
+CREATE INDEX IF NOT EXISTS idx_sql_record_sql_type ON t_sql_record (sql_type);
+CREATE INDEX IF NOT EXISTS idx_sql_record_source_type ON t_sql_record (source_type);
+CREATE INDEX IF NOT EXISTS idx_sql_record_sql_hash ON t_sql_record (sql_hash);
+CREATE INDEX IF NOT EXISTS idx_sql_record_update_time ON t_sql_record (update_time DESC);
+
 CREATE TABLE IF NOT EXISTS t_scan_batch (
     id              BIGSERIAL PRIMARY KEY,
     project_id      BIGINT NOT NULL,

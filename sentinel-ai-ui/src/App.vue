@@ -24,6 +24,10 @@
           <el-icon><Search /></el-icon>
           <span>扫描历史</span>
         </el-menu-item>
+        <el-menu-item index="/sql-records">
+          <el-icon><Document /></el-icon>
+          <span>SQL 记录</span>
+        </el-menu-item>
         <el-menu-item index="/analysis">
           <el-icon><Warning /></el-icon>
           <span>SQL 分析</span>
@@ -87,5 +91,13 @@ html, body, #app {
 .app-main {
   background-color: #f5f7fa;
   overflow-y: auto;
+}
+
+.filter-form .el-select {
+  min-width: 180px;
+}
+
+.filter-form .el-date-editor {
+  min-width: 360px;
 }
 </style>

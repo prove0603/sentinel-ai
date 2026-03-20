@@ -21,7 +21,9 @@
         </template>
       </el-table-column>
       <el-table-column prop="lastScanCommit" label="最后扫描 Commit" width="140" show-overflow-tooltip />
-      <el-table-column prop="lastScanTime" label="最后扫描时间" width="170" />
+      <el-table-column label="最后扫描时间" width="170">
+        <template #default="{ row }">{{ formatTime(row.lastScanTime) }}</template>
+      </el-table-column>
       <el-table-column label="操作" width="400" fixed="right">
         <template #default="{ row }">
           <el-button size="small" type="primary" @click="triggerScan(row.id, false)">
@@ -136,6 +138,7 @@
 import { ref, onMounted, computed, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { projectApi, scanApi } from '../api'
+import { formatTime } from '../utils/format'
 
 const projects = ref<any[]>([])
 const showDialog = ref(false)

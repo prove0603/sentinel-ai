@@ -65,7 +65,9 @@
           <el-tag :type="statusTagType(row.handleStatus)" size="small">{{ statusLabel(row.handleStatus) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="createTime" label="分析时间" width="180" sortable />
+      <el-table-column label="分析时间" width="180" sortable>
+        <template #default="{ row }">{{ formatTime(row.createTime) }}</template>
+      </el-table-column>
       <el-table-column label="操作" width="100">
         <template #default="{ row }">
           <el-button size="small" link type="primary" @click="viewDetail(row)">详情</el-button>
@@ -169,6 +171,7 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
 import { analysisApi, projectApi } from '../api'
+import { formatTime } from '../utils/format'
 
 const records = ref<any[]>([])
 const projects = ref<any[]>([])

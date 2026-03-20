@@ -108,6 +108,7 @@ import { ref, onMounted, computed } from 'vue'
 import { ElMessage } from 'element-plus'
 import { Right } from '@element-plus/icons-vue'
 import { projectApi, gitApi } from '../api'
+import { formatTime } from '../utils/format'
 
 interface Project {
   id: number
@@ -274,14 +275,6 @@ const testConnection = async () => {
   }
 }
 
-const formatTime = (iso: string) => {
-  if (!iso) return ''
-  try {
-    return new Date(iso).toLocaleString('zh-CN')
-  } catch {
-    return iso
-  }
-}
 
 const statusTagType = (status: string) => {
   switch (status) {

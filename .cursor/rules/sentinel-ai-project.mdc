@@ -64,6 +64,7 @@ sentinel-ai/
 │       │   └── WebConfig.java
 │       ├── common/                  # Result, PageResult 等
 │       ├── controller/              # REST API
+│       │   ├── ToolController.java         # 工具/测试接口（扫描 wrapper SQL 等）
 │       ├── service/                 # 业务逻辑
 │       ├── scanner/                 # SQL 提取引擎 ← P1+P4
 │       │   ├── SqlScanner.java              # 扫描器接口 (scan + scanFiles)
@@ -108,6 +109,11 @@ sentinel-ai/
 │   ├── package.json
 │   ├── vite.config.ts
 │   └── src/
+│       ├── utils/
+│       │   └── format.ts                   # 统一工具函数（formatTime 等）
+│       └── views/
+│           ├── SqlRecords.vue              # SQL 记录列表（支持 projectId/sqlType/sourceType 筛选）
+│           └── ...
 └── .cursor/rules/
 ```
 
@@ -122,7 +128,11 @@ sentinel-ai/
   - 处理: `<if>`, `<choose>/<when>/<otherwise>`, `<where>`, `<set>`, `<trim>`, `<foreach>`, `<include>`, `<bind>`
 - `SqlNormalizer` - ✅ SQL 标准化（替换 `#{}/${}` → `?`，归一化空白）+ SHA-256 哈希
 - `AnnotationSqlScanner` - ✅ P4：JavaParser 解析 @Select/@Insert/@Update/@Delete 注解
-- `QueryWrapperScanner` - ✅ P4：JavaParser AST 分析 QueryWrapper/LambdaQueryWrapper
+- `QueryWrapperScanner` - ✅ P4：JavaParser AST 分析 QueryWrapper/LambdaQueryWrapper/UpdateWrapper
+  - 支持 `.set()`, `.setSql()` 方法解析为 SET 子句
+  - 支持 `@TableName` 注解推断表名
+  - 支持泛型类型、方法引用、FieldAccessExpr 推断实体类
+  - 支持 `scanCodeSnippet(String)` 单段代码测试
 - `JavaFileWalker` - ✅ P4：Java 文件递归遍历工具
 
 ### Delta (增量检测) — ✅ P3 + P4 已实现
@@ -254,6 +264,10 @@ knowledge_vector   -- 向量存储（P6 RAG）— PgVectorStore 自动管理
   - `POST /api/webhook/gitlab` — GitLab push 事件
   - `POST /api/webhook/github` — GitHub push 事件
 - `/api/knowledge/*` - 业务知识库管理（CRUD + 重新向量化 + RAG 状态）
+- `/api/tool/*` - 工具/测试接口
+  - `POST /api/tool/scan-wrapper` — 扫描单段 Java 代码中的 wrapper SQL
+  - `POST /api/tool/scan-wrapper-project?projectId=` — 扫描项目所有 wrapper SQL 并存入 sql_record（不调用 AI）
+  - `POST /api/tool/execute-ddl` — 执行 DDL SQL（开发用）
 
 ---
 
@@ -266,6 +280,7 @@ knowledge_vector   -- 向量存储（P6 RAG）— PgVectorStore 自动管理
 - AI 调用缓存：Caffeine (key = sql_hash)
 - 表结构知识：文件方案 `table-meta/{table}.sql`（扁平目录，不按项目分子目录）
 - 统一使用 PostgreSQL 18 + pgvector 0.8.2（业务表 + 向量表共用一个数据库）
+- 前端时间格式化：所有页面统一使用 `utils/format.ts` 的 `formatTime()`，将 ISO `LocalDateTime` 截断到秒（`YYYY-MM-DD HH:mm:ss`）
 - 前端开发代理：Vite `proxy /api -> http://localhost:8090`
 - **开发调试开关：**
   - `sentinel.dev.max-sql-per-scan` — 限制单次扫描处理的 SQL 数量（默认 -1 不限，dev 环境设为 50）
@@ -406,6 +421,14 @@ table-meta/
   - ✅ 创建 `application-dev.yml.example` 供开源用户参考
   - ✅ 安全审计：确认无密钥/token/公司信息泄露到 git 跟踪文件
   - ✅ 详细调试日志：`[refreshDdl]`/`[refreshIndexStats]` 前缀，每步都有日志输出
+- **P4.1：** QueryWrapper 扫描增强 + 工具接口 + SQL 记录页面 ← **✅ 已完成**
+  - ✅ `QueryWrapperScanner` 增强：支持 `UpdateWrapper.set()`/`setSql()` 解析
+  - ✅ `QueryWrapperScanner` 增强：`@TableName` 注解支持、泛型/方法引用/FieldAccessExpr 推断
+  - ✅ `ToolController` 新增 `scan-wrapper-project` 接口（项目级 wrapper SQL 扫描，不调用 AI）
+  - ✅ 前端新增 SQL 记录页面 `SqlRecords.vue`（支持 projectId/sqlType/sourceType 筛选）
+  - ✅ 前端统一时间格式化（`utils/format.ts`），所有页面时间精确到秒
+  - ✅ 前端筛选框宽度修复（全局 CSS `min-width`）
+  - ✅ `t_sql_record` 表新增索引（project_id, sql_hash, source_type 等）
 - **P8：** 完善 Dashboard、通知、导出报告、开源准备
 
 ---

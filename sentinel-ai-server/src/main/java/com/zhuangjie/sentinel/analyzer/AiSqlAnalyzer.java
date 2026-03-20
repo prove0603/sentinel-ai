@@ -1,12 +1,8 @@
 package com.zhuangjie.sentinel.analyzer;
 
-import com.alibaba.dashscope.aigc.multimodalconversation.MultiModalConversation;
-import com.alibaba.dashscope.aigc.multimodalconversation.MultiModalConversationParam;
-import com.alibaba.dashscope.aigc.multimodalconversation.MultiModalConversationResult;
-import com.alibaba.dashscope.common.MultiModalMessage;
-import com.alibaba.dashscope.common.Role;
 import com.fasterxml.jackson.databind.DeserializationFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.zhuangjie.sentinel.analyzer.provider.ModelProvider.ModelResponse;
 import com.zhuangjie.sentinel.knowledge.KnowledgeContextBuilder;
 import com.zhuangjie.sentinel.knowledge.TableNameExtractor;
 import com.zhuangjie.sentinel.pojo.dto.ScannedSql;
@@ -14,7 +10,6 @@ import com.zhuangjie.sentinel.rag.KnowledgeRagService;
 import com.zhuangjie.sentinel.pojo.dto.SqlRiskAssessment;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.cache.Cache;
 import org.springframework.cache.CacheManager;
 import org.springframework.stereotype.Component;
@@ -22,8 +17,8 @@ import org.springframework.stereotype.Component;
 import java.util.*;
 
 /**
- * AI-powered SQL performance analysis using DashScope MultiModalConversation API.
- * Supports qwen3.5-plus and other multi-modal models.
+ * AI-powered SQL performance analysis.
+ * Uses ModelRouter for round-robin multi-model rotation with automatic fallback.
  * Caffeine cache prevents redundant calls for the same SQL hash.
  */
 @Slf4j
@@ -36,7 +31,7 @@ public class AiSqlAnalyzer {
     private static final ObjectMapper MAPPER = new ObjectMapper()
             .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
-    private static final String SYSTEM_PROMPT = """
+    static final String SYSTEM_PROMPT = """
             你是一个资深的 MySQL DBA，拥有 10 年以上数据库性能优化经验。
             你的任务是分析 SQL 语句的性能风险，给出准确的判断和可执行的优化建议。
             你需要结合表结构、索引信息、数据量来做出判断。
@@ -90,42 +85,34 @@ public class AiSqlAnalyzer {
             }
             """;
 
-    private final MultiModalConversation conversation;
+    private final ModelRouter modelRouter;
     private final CacheManager cacheManager;
     private final KnowledgeContextBuilder knowledgeContextBuilder;
     private final KnowledgeRagService knowledgeRagService;
     private final TableNameExtractor tableNameExtractor;
 
-    @Value("${sentinel.ai.model:qwen3.5-plus}")
-    private String model;
-
-    @Value("${sentinel.ai.api-key:${AI_DASHSCOPE_API_KEY:}}")
-    private String apiKey;
-
-    @Value("${sentinel.ai.temperature:0.2}")
-    private float temperature;
-
-    public AiSqlAnalyzer(@Autowired(required = false) MultiModalConversation conversation,
+    public AiSqlAnalyzer(@Autowired(required = false) ModelRouter modelRouter,
                           CacheManager cacheManager,
                           @Autowired(required = false) KnowledgeContextBuilder knowledgeContextBuilder,
                           @Autowired(required = false) KnowledgeRagService knowledgeRagService,
                           @Autowired(required = false) TableNameExtractor tableNameExtractor) {
-        this.conversation = conversation;
+        this.modelRouter = modelRouter;
         this.cacheManager = cacheManager;
         this.knowledgeContextBuilder = knowledgeContextBuilder;
         this.knowledgeRagService = knowledgeRagService;
         this.tableNameExtractor = tableNameExtractor;
-        if (conversation == null) {
-            log.info("AI analysis disabled: MultiModalConversation not configured. Set sentinel.ai.enabled=true and AI_DASHSCOPE_API_KEY to enable.");
+        if (modelRouter == null) {
+            log.info("AI analysis disabled: ModelRouter not configured. Set sentinel.ai.enabled=true and configure providers.");
         } else {
-            log.info("AI analysis enabled (DashScope MultiModalConversation), DDL context: {}, RAG: {}",
+            log.info("AI analysis enabled with ModelRouter ({} providers), DDL context: {}, RAG: {}",
+                    modelRouter.getProviders().size(),
                     knowledgeContextBuilder != null && knowledgeContextBuilder.isAvailable() ? "available" : "unavailable",
                     knowledgeRagService != null && knowledgeRagService.isRagAvailable() ? "available" : "unavailable");
         }
     }
 
     public boolean isAvailable() {
-        return conversation != null;
+        return modelRouter != null;
     }
 
     public AiAnalysisDetail analyze(String sqlHash, ScannedSql sql, String projectName) {
@@ -170,8 +157,6 @@ public class AiSqlAnalyzer {
         String promptText = String.format(PROMPT_TEMPLATE,
                 sql.sqlType(), sql.sourceLocation(), sql.sqlNormalized(), tableContext, ragContext);
 
-        log.debug("AI prompt:\n{}", promptText);
-
         AiAnalysisDetail detail = callWithRetry(promptText);
 
         if (detail != null && cache != null) {
@@ -183,44 +168,12 @@ public class AiSqlAnalyzer {
     private AiAnalysisDetail callWithRetry(String promptText) {
         for (int attempt = 0; attempt <= MAX_RETRIES; attempt++) {
             try {
-                MultiModalMessage systemMsg = MultiModalMessage.builder()
-                        .role(Role.SYSTEM.getValue())
-                        .content(List.of(Collections.singletonMap("text", SYSTEM_PROMPT)))
-                        .build();
+                ModelResponse response = modelRouter.call(SYSTEM_PROMPT, promptText);
+                SqlRiskAssessment assessment = parseResponse(response.content());
 
-                MultiModalMessage userMsg = MultiModalMessage.builder()
-                        .role(Role.USER.getValue())
-                        .content(List.of(Collections.singletonMap("text", promptText)))
-                        .build();
-
-                List<MultiModalMessage> messages = new ArrayList<>();
-                messages.add(systemMsg);
-                messages.add(userMsg);
-
-                MultiModalConversationParam.MultiModalConversationParamBuilder<?, ?> paramBuilder =
-                        MultiModalConversationParam.builder()
-                                .model(model)
-                                .messages(messages)
-                                .temperature(temperature);
-
-                if (apiKey != null && !apiKey.isBlank()) {
-                    paramBuilder.apiKey(apiKey);
-                }
-
-                MultiModalConversationResult result = conversation.call(paramBuilder.build());
-
-                String content = (String) result.getOutput().getChoices()
-                        .get(0).getMessage().getContent().get(0).get("text");
-
-                SqlRiskAssessment assessment = parseResponse(content);
-
-                int tokensUsed = 0;
-                if (result.getUsage() != null) {
-                    tokensUsed = result.getUsage().getInputTokens() + result.getUsage().getOutputTokens();
-                }
-
-                log.debug("AI analysis completed: riskLevel={}, tokens={}", assessment.riskLevel(), tokensUsed);
-                return new AiAnalysisDetail(assessment, model, tokensUsed);
+                log.debug("AI analysis completed: riskLevel={}, model={}, tokens={}",
+                        assessment.riskLevel(), response.model(), response.tokensUsed());
+                return new AiAnalysisDetail(assessment, response.model(), response.tokensUsed());
 
             } catch (Exception e) {
                 if (attempt < MAX_RETRIES) {

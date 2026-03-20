@@ -131,6 +131,7 @@ public class ScanService {
 
         int riskCount = 0;
         int aiAnalyzedCount = 0;
+        int reusedCount = 0;
         Set<String> seenHashes = new HashSet<>();
 
         for (ScannedSql scannedSql : scannedSqls) {
@@ -145,6 +146,15 @@ public class ScanService {
             }
 
             SqlRecord record = saveSqlRecord(scannedSql, sqlHash, project.getId(), batch.getId());
+
+            SqlAnalysis reused = reuseExistingAnalysis(sqlHash, record.getId(), batch.getId());
+            if (reused != null) {
+                reusedCount++;
+                if (isHighRisk(reused.getFinalRiskLevel())) {
+                    riskCount++;
+                }
+                continue;
+            }
 
             if (shouldInvokeAi(aiAnalyzedCount)) {
                 AiAnalysisDetail aiDetail = aiSqlAnalyzer.analyze(sqlHash, scannedSql, project.getProjectName());
@@ -164,8 +174,8 @@ public class ScanService {
         batch.setRemovedSqlCount(0);
         batch.setRiskSqlCount(riskCount);
 
-        log.info("Full scan completed: batchId={}, totalSql={}, riskSql={}, aiAnalyzed={}",
-                batch.getId(), seenHashes.size(), riskCount, aiAnalyzedCount);
+        log.info("Full scan completed: batchId={}, totalSql={}, riskSql={}, aiAnalyzed={}, reused={}",
+                batch.getId(), seenHashes.size(), riskCount, aiAnalyzedCount, reusedCount);
     }
 
     // ==================== Incremental Scan ====================
@@ -191,6 +201,7 @@ public class ScanService {
         int newCount = 0;
         int riskCount = 0;
         int aiAnalyzedCount = 0;
+        int reusedCount = 0;
 
         List<String> deletedFiles = delta.deletedMapperXmlFiles();
         if (!deletedFiles.isEmpty()) {
@@ -209,6 +220,7 @@ public class ScanService {
             removedCount += xmlResult.removedCount;
             riskCount += xmlResult.riskCount;
             aiAnalyzedCount += xmlResult.aiAnalyzedCount;
+            reusedCount += xmlResult.reusedCount;
         }
 
         List<String> changedJavaFiles = delta.changedJavaFiles();
@@ -227,6 +239,7 @@ public class ScanService {
                 removedCount += javaResult.removedCount;
                 riskCount += javaResult.riskCount;
                 aiAnalyzedCount += javaResult.aiAnalyzedCount;
+                reusedCount += javaResult.reusedCount;
             }
         }
 
@@ -250,13 +263,13 @@ public class ScanService {
         batch.setRemovedSqlCount(removedCount);
         batch.setRiskSqlCount(riskCount);
 
-        log.info("Incremental scan completed: batchId={}, new={}, removed={}, risk={}, aiAnalyzed={}",
-                batch.getId(), newCount, removedCount, riskCount, aiAnalyzedCount);
+        log.info("Incremental scan completed: batchId={}, new={}, removed={}, risk={}, aiAnalyzed={}, reused={}",
+                batch.getId(), newCount, removedCount, riskCount, aiAnalyzedCount, reusedCount);
     }
 
     // ==================== Incremental Processing ====================
 
-    private record IncrementalProcessResult(int newCount, int removedCount, int riskCount, int aiAnalyzedCount) {
+    private record IncrementalProcessResult(int newCount, int removedCount, int riskCount, int aiAnalyzedCount, int reusedCount) {
     }
 
     private IncrementalProcessResult processIncrementalSqls(
@@ -275,6 +288,7 @@ public class ScanService {
         int removedCount = 0;
         int riskCount = 0;
         int aiAnalyzedCount = 0;
+        int reusedCount = 0;
         Set<String> seenHashes = new HashSet<>();
 
         for (ScannedSql newSql : comparison.newSqls()) {
@@ -302,6 +316,15 @@ public class ScanService {
             SqlRecord record = saveSqlRecord(newSql, sqlHash, project.getId(), batch.getId());
             newCount++;
 
+            SqlAnalysis reused = reuseExistingAnalysis(sqlHash, record.getId(), batch.getId());
+            if (reused != null) {
+                reusedCount++;
+                if (isHighRisk(reused.getFinalRiskLevel())) {
+                    riskCount++;
+                }
+                continue;
+            }
+
             if (shouldInvokeAi(baseAiAnalyzedCount + aiAnalyzedCount)) {
                 AiAnalysisDetail aiDetail = aiSqlAnalyzer.analyze(sqlHash, newSql, project.getProjectName());
                 if (aiDetail != null) {
@@ -325,7 +348,7 @@ public class ScanService {
             removedCount++;
         }
 
-        return new IncrementalProcessResult(newCount, removedCount, riskCount, aiAnalyzedCount);
+        return new IncrementalProcessResult(newCount, removedCount, riskCount, aiAnalyzedCount, reusedCount);
     }
 
     // ==================== Multi-Source Scanning ====================
@@ -342,6 +365,58 @@ public class ScanService {
                 all.stream().filter(s -> s.sourceType() == com.zhuangjie.sentinel.pojo.enums.SqlSourceType.QUERY_WRAPPER
                         || s.sourceType() == com.zhuangjie.sentinel.pojo.enums.SqlSourceType.LAMBDA_WRAPPER).count());
         return all;
+    }
+
+    // ==================== Persistent Analysis Cache ====================
+
+    /**
+     * Checks if the same SQL (by hash) has already been analyzed in a previous scan.
+     * If found, creates a new SqlAnalysis record that copies the AI results,
+     * avoiding a redundant AI call.
+     *
+     * @return the reused SqlAnalysis, or null if no prior analysis exists
+     */
+    private SqlAnalysis reuseExistingAnalysis(String sqlHash, Long newRecordId, Long batchId) {
+        List<SqlRecord> priorRecords = sqlRecordDbService.list(
+                new LambdaQueryWrapper<SqlRecord>()
+                        .eq(SqlRecord::getSqlHash, sqlHash)
+                        .eq(SqlRecord::getStatus, 1)
+                        .ne(SqlRecord::getId, newRecordId)
+                        .last("LIMIT 1"));
+        if (priorRecords.isEmpty()) {
+            return null;
+        }
+
+        SqlRecord priorRecord = priorRecords.get(0);
+        SqlAnalysis priorAnalysis = sqlAnalysisDbService.getOne(
+                new LambdaQueryWrapper<SqlAnalysis>()
+                        .eq(SqlAnalysis::getSqlRecordId, priorRecord.getId())
+                        .orderByDesc(SqlAnalysis::getCreateTime)
+                        .last("LIMIT 1"));
+        if (priorAnalysis == null) {
+            return null;
+        }
+
+        SqlAnalysis reused = new SqlAnalysis();
+        reused.setSqlRecordId(newRecordId);
+        reused.setScanBatchId(batchId);
+        reused.setAiRiskLevel(priorAnalysis.getAiRiskLevel());
+        reused.setAiAnalysis(priorAnalysis.getAiAnalysis());
+        reused.setAiIndexSuggestion(priorAnalysis.getAiIndexSuggestion());
+        reused.setAiRewriteSuggestion(priorAnalysis.getAiRewriteSuggestion());
+        reused.setAiEstimatedScanRows(priorAnalysis.getAiEstimatedScanRows());
+        reused.setAiEstimatedExecTimeMs(priorAnalysis.getAiEstimatedExecTimeMs());
+        reused.setAiModel(priorAnalysis.getAiModel());
+        reused.setAiTokensUsed(0);
+        reused.setFinalRiskLevel(priorAnalysis.getFinalRiskLevel());
+        reused.setHandleStatus("ANALYZED");
+        reused.setHandleNote("Reused from prior analysis (record #" + priorRecord.getId() + ")");
+        reused.setCreateTime(LocalDateTime.now());
+        sqlAnalysisDbService.save(reused);
+
+        log.debug("Reused prior analysis for sqlHash={}, priorRecordId={}, newRecordId={}",
+                sqlHash, priorRecord.getId(), newRecordId);
+        return reused;
     }
 
     // ==================== Helper Methods ====================

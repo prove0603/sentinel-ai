@@ -33,7 +33,9 @@
         </template>
       </el-table-column>
       <el-table-column prop="scanDurationMs" label="耗时(ms)" width="100" />
-      <el-table-column prop="createTime" label="扫描时间" width="180" />
+      <el-table-column label="扫描时间" width="180">
+        <template #default="{ row }">{{ formatTime(row.createTime) }}</template>
+      </el-table-column>
     </el-table>
     <el-pagination
       v-model:current-page="page"
@@ -49,6 +51,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { scanApi } from '../api'
+import { formatTime } from '../utils/format'
 
 const batches = ref<any[]>([])
 const page = ref(1)

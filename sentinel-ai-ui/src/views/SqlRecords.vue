@@ -54,7 +54,9 @@
           <div class="sql-preview" @click="viewDetail(row)">{{ truncateSql(row.sqlText) }}</div>
         </template>
       </el-table-column>
-      <el-table-column prop="updateTime" label="更新时间" width="170" sortable />
+      <el-table-column label="更新时间" width="170" sortable>
+        <template #default="{ row }">{{ formatTime(row.updateTime) }}</template>
+      </el-table-column>
       <el-table-column label="操作" width="80" fixed="right">
         <template #default="{ row }">
           <el-button size="small" link type="primary" @click="viewDetail(row)">详情</el-button>
@@ -86,8 +88,8 @@
           <el-descriptions-item label="定位" :span="2">
             <code>{{ currentRecord.sourceLocation }}</code>
           </el-descriptions-item>
-          <el-descriptions-item label="创建时间">{{ currentRecord.createTime }}</el-descriptions-item>
-          <el-descriptions-item label="更新时间">{{ currentRecord.updateTime }}</el-descriptions-item>
+          <el-descriptions-item label="创建时间">{{ formatTime(currentRecord.createTime) }}</el-descriptions-item>
+          <el-descriptions-item label="更新时间">{{ formatTime(currentRecord.updateTime) }}</el-descriptions-item>
         </el-descriptions>
 
         <h4>原始 SQL</h4>
@@ -107,6 +109,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { sqlRecordApi, projectApi } from '../api'
+import { formatTime } from '../utils/format'
 
 const records = ref<any[]>([])
 const projects = ref<any[]>([])

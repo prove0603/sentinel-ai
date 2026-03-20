@@ -38,7 +38,9 @@
         </template>
       </el-table-column>
       <el-table-column prop="source" label="来源" width="80" />
-      <el-table-column prop="createTime" label="创建时间" width="170" />
+      <el-table-column label="创建时间" width="170">
+        <template #default="{ row }">{{ formatTime(row.createTime) }}</template>
+      </el-table-column>
       <el-table-column label="操作" width="140" fixed="right">
         <template #default="{ row }">
           <el-button size="small" link type="primary" @click="openDialog(row)">编辑</el-button>
@@ -86,6 +88,7 @@
 import { ref, onMounted } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { knowledgeApi } from '../api'
+import { formatTime } from '../utils/format'
 
 const records = ref<any[]>([])
 const page = ref(1)

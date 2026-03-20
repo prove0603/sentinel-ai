@@ -1,6 +1,8 @@
 package com.zhuangjie.sentinel.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.zhuangjie.sentinel.analyzer.ModelRouter;
+import com.zhuangjie.sentinel.analyzer.provider.ModelProvider.ModelResponse;
 import com.zhuangjie.sentinel.common.Result;
 import com.zhuangjie.sentinel.db.entity.ProjectConfig;
 import com.zhuangjie.sentinel.db.entity.SqlRecord;
@@ -30,6 +32,7 @@ public class ToolController {
     private final ProjectService projectService;
     private final GitRepoManager gitRepoManager;
     private final SqlRecordDbService sqlRecordDbService;
+    private final ModelRouter modelRouter;
 
     @PostMapping("/scan-wrapper")
     public Result<List<ScannedSql>> scanWrapper(@RequestBody String javaCode) {
@@ -115,5 +118,62 @@ public class ToolController {
             }
         }
         return Result.ok("Executed " + count + " statement(s)");
+    }
+
+    /**
+     * Tests the ModelRouter round-robin rotation.
+     * Calls each provider in sequence with a simple prompt, returning which model responded.
+     *
+     * @param rounds number of round-robin calls to make (default 3)
+     */
+    @GetMapping("/test-model-rotation")
+    public Result<Map<String, Object>> testModelRotation(
+            @RequestParam(defaultValue = "3") int rounds) {
+
+        if (modelRouter == null) {
+            return Result.fail("ModelRouter not configured. Set sentinel.ai.enabled=true and configure providers.");
+        }
+
+        List<Map<String, Object>> results = new ArrayList<>();
+        int success = 0;
+        int failed = 0;
+
+        for (int i = 0; i < rounds; i++) {
+            Map<String, Object> item = new LinkedHashMap<>();
+            item.put("round", i + 1);
+            item.put("expectedModel", modelRouter.peekNext().modelName());
+
+            long start = System.currentTimeMillis();
+            try {
+                ModelResponse response = modelRouter.call(
+                        "You are a helpful assistant.",
+                        "Reply with only the model name you are running as, nothing else.");
+                long elapsed = System.currentTimeMillis() - start;
+
+                item.put("status", "OK");
+                item.put("respondedModel", response.model());
+                item.put("content", response.content().substring(0, Math.min(200, response.content().length())));
+                item.put("tokensUsed", response.tokensUsed());
+                item.put("elapsedMs", elapsed);
+                success++;
+            } catch (Exception e) {
+                long elapsed = System.currentTimeMillis() - start;
+                item.put("status", "FAILED");
+                item.put("error", e.getMessage());
+                item.put("elapsedMs", elapsed);
+                failed++;
+            }
+            results.add(item);
+        }
+
+        Map<String, Object> summary = new LinkedHashMap<>();
+        summary.put("totalProviders", modelRouter.getProviders().size());
+        summary.put("providerList", modelRouter.getProviders().stream()
+                .map(p -> p.name() + " (" + p.modelName() + ")").toList());
+        summary.put("totalCalls", rounds);
+        summary.put("success", success);
+        summary.put("failed", failed);
+        summary.put("details", results);
+        return Result.ok(summary);
     }
 }

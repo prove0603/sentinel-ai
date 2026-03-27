@@ -104,6 +104,17 @@ CREATE TABLE IF NOT EXISTS t_sql_analysis (
     create_time             TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS t_exemption_rule (
+    id              BIGSERIAL PRIMARY KEY,
+    project_id      BIGINT,
+    rule_type       VARCHAR(30) NOT NULL,
+    pattern         VARCHAR(500) NOT NULL,
+    reason          VARCHAR(500),
+    status          SMALLINT DEFAULT 1,
+    create_time     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    update_time     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS t_knowledge_entry (
     id              BIGSERIAL PRIMARY KEY,
     knowledge_type  VARCHAR(30) NOT NULL,

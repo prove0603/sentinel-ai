@@ -42,6 +42,11 @@ const router = createRouter({
       path: '/knowledge',
       name: 'Knowledge',
       component: () => import('../views/Knowledge.vue')
+    },
+    {
+      path: '/exemptions',
+      name: 'Exemptions',
+      component: () => import('../views/Exemptions.vue')
     }
   ]
 })

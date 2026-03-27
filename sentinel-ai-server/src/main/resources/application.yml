@@ -9,6 +9,13 @@ spring:
       enabled: true
   profiles:
     active: dev
+  ai:
+    openai:
+      chat:
+        enabled: false
+    chat:
+      client:
+        enabled: false
 sentinel:
   ai:
     enabled: false

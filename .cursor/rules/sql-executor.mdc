@@ -1,0 +1,59 @@
+---
+description: PostgreSQL SQL 执行规则 — 适用于 business-qa 和 sentinel-ai 项目
+alwaysApply: true
+---
+
+# PostgreSQL SQL 执行规则
+
+当需要对 `business-qa` 或 `sentinel-ai` 项目执行 SQL 时，直接通过 psql 命令行执行，无需用户手动操作。
+
+## 环境信息
+
+| 项目 | 数据库名 | Schema 文件路径 |
+|------|----------|----------------|
+| sentinel-ai | `sentinel_ai` | `e:\cursor\sentinel-ai\sentinel-ai-server\src\main\resources\db\schema-pg.sql` |
+| business-qa | `business_qa` | `e:\cursor\business-qa\business-qa-server\src\main\resources\db\schema.sql` |
+
+## 连接信息
+
+- **Host**: `localhost`
+- **Port**: `5432`
+- **User**: `postgres`
+- **Password**: `123456`
+- **psql 路径**: `C:\Program Files\PostgreSQL\18\bin\psql.exe`
+
+## 执行方式
+
+PowerShell 中执行 SQL：
+
+```powershell
+$env:PGPASSWORD = "123456"; & "C:\Program Files\PostgreSQL\18\bin\psql.exe" -U postgres -h localhost -p 5432 -d <数据库名> -c "<SQL语句>"
+```
+
+执行 SQL 文件：
+
+```powershell
+$env:PGPASSWORD = "123456"; & "C:\Program Files\PostgreSQL\18\bin\psql.exe" -U postgres -h localhost -p 5432 -d <数据库名> -f "<文件路径>"
+```
+
+## 安全规则
+
+### 可直接执行（无需确认）
+
+- `CREATE TABLE` / `CREATE INDEX` / `CREATE EXTENSION`
+- `ALTER TABLE ADD COLUMN` / `ALTER TABLE ADD CONSTRAINT`
+- `INSERT INTO`
+- `UPDATE`（常规数据更新）
+- `SELECT` 查询
+- 执行 schema.sql 建表脚本
+- `CREATE DATABASE`
+
+### 需要用户二次确认（危险操作）
+
+执行前必须先告知用户具体 SQL 内容，等待用户确认后才执行：
+
+- `DROP TABLE` / `DROP DATABASE` / `DROP INDEX`
+- `TRUNCATE TABLE`
+- `DELETE FROM`（删除数据）
+- `ALTER TABLE DROP COLUMN`
+- 任何批量删除或清空操作

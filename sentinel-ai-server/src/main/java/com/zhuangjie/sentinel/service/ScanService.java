@@ -55,6 +55,7 @@ public class ScanService {
     private final GitDeltaDetector gitDeltaDetector;
     private final GitRepoManager gitRepoManager;
     private final SqlHashComparator sqlHashComparator;
+    private final ExemptionService exemptionService;
 
     @Value("${sentinel.ai.max-ai-calls-per-scan:-1}")
     private int maxAiCallsPerScan;
@@ -132,6 +133,7 @@ public class ScanService {
         int riskCount = 0;
         int aiAnalyzedCount = 0;
         int reusedCount = 0;
+        int exemptedCount = 0;
         Set<String> seenHashes = new HashSet<>();
 
         for (ScannedSql scannedSql : scannedSqls) {
@@ -143,6 +145,16 @@ public class ScanService {
             if (maxSqlPerScan > 0 && seenHashes.size() > maxSqlPerScan) {
                 log.info("Dev limit reached: max-sql-per-scan={}, stopping scan", maxSqlPerScan);
                 break;
+            }
+
+            com.zhuangjie.sentinel.db.entity.ExemptionRule exemption =
+                    exemptionService.match(scannedSql, project.getId());
+            if (exemption != null) {
+                exemptedCount++;
+                log.debug("SQL exempted (skipped entirely): rule=#{}({}:{}), source={}",
+                        exemption.getId(), exemption.getRuleType(), exemption.getPattern(),
+                        scannedSql.sourceLocation());
+                continue;
             }
 
             SqlRecord record = saveSqlRecord(scannedSql, sqlHash, project.getId(), batch.getId());
@@ -174,8 +186,8 @@ public class ScanService {
         batch.setRemovedSqlCount(0);
         batch.setRiskSqlCount(riskCount);
 
-        log.info("Full scan completed: batchId={}, totalSql={}, riskSql={}, aiAnalyzed={}, reused={}",
-                batch.getId(), seenHashes.size(), riskCount, aiAnalyzedCount, reusedCount);
+        log.info("Full scan completed: batchId={}, totalSql={}, riskSql={}, aiAnalyzed={}, reused={}, exempted={}",
+                batch.getId(), seenHashes.size(), riskCount, aiAnalyzedCount, reusedCount, exemptedCount);
     }
 
     // ==================== Incremental Scan ====================
@@ -310,6 +322,15 @@ public class ScanService {
 
             if (existsGlobally) {
                 updateLastScanId(project.getId(), sqlHash, batch.getId());
+                continue;
+            }
+
+            com.zhuangjie.sentinel.db.entity.ExemptionRule exemption =
+                    exemptionService.match(newSql, project.getId());
+            if (exemption != null) {
+                log.debug("SQL exempted (skipped entirely): rule=#{}({}:{}), source={}",
+                        exemption.getId(), exemption.getRuleType(), exemption.getPattern(),
+                        newSql.sourceLocation());
                 continue;
             }
 

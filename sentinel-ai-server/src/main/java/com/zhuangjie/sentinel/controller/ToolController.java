@@ -1,8 +1,9 @@
 package com.zhuangjie.sentinel.controller;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.zhuangjie.sentinel.analyzer.ModelRouter;
-import com.zhuangjie.sentinel.analyzer.provider.ModelProvider.ModelResponse;
+import com.zhuangjie.sentinel.analyzer.MultiModelChatService;
+import com.zhuangjie.sentinel.analyzer.MultiModelChatService.NamedChatClient;
+import com.zhuangjie.sentinel.analyzer.MultiModelChatService.RawCallResult;
 import com.zhuangjie.sentinel.common.Result;
 import com.zhuangjie.sentinel.db.entity.ProjectConfig;
 import com.zhuangjie.sentinel.db.entity.SqlRecord;
@@ -14,6 +15,7 @@ import com.zhuangjie.sentinel.scanner.SqlNormalizer;
 import com.zhuangjie.sentinel.service.ProjectService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.web.bind.annotation.*;
 
@@ -32,7 +34,7 @@ public class ToolController {
     private final ProjectService projectService;
     private final GitRepoManager gitRepoManager;
     private final SqlRecordDbService sqlRecordDbService;
-    private final ModelRouter modelRouter;
+    private final ObjectProvider<MultiModelChatService> chatServiceProvider;
 
     @PostMapping("/scan-wrapper")
     public Result<List<ScannedSql>> scanWrapper(@RequestBody String javaCode) {
@@ -121,7 +123,7 @@ public class ToolController {
     }
 
     /**
-     * Tests the ModelRouter round-robin rotation.
+     * Tests the multi-model round-robin rotation.
      * Calls each provider in sequence with a simple prompt, returning which model responded.
      *
      * @param rounds number of round-robin calls to make (default 3)
@@ -130,8 +132,9 @@ public class ToolController {
     public Result<Map<String, Object>> testModelRotation(
             @RequestParam(defaultValue = "3") int rounds) {
 
-        if (modelRouter == null) {
-            return Result.fail("ModelRouter not configured. Set sentinel.ai.enabled=true and configure providers.");
+        MultiModelChatService chatService = chatServiceProvider.getIfAvailable();
+        if (chatService == null) {
+            return Result.fail("MultiModelChatService not configured. Set sentinel.ai.enabled=true and configure providers.");
         }
 
         List<Map<String, Object>> results = new ArrayList<>();
@@ -141,11 +144,11 @@ public class ToolController {
         for (int i = 0; i < rounds; i++) {
             Map<String, Object> item = new LinkedHashMap<>();
             item.put("round", i + 1);
-            item.put("expectedModel", modelRouter.peekNext().modelName());
+            item.put("expectedModel", chatService.peekNext().model());
 
             long start = System.currentTimeMillis();
             try {
-                ModelResponse response = modelRouter.call(
+                RawCallResult response = chatService.callRaw(
                         "You are a helpful assistant.",
                         "Reply with only the model name you are running as, nothing else.");
                 long elapsed = System.currentTimeMillis() - start;
@@ -167,9 +170,9 @@ public class ToolController {
         }
 
         Map<String, Object> summary = new LinkedHashMap<>();
-        summary.put("totalProviders", modelRouter.getProviders().size());
-        summary.put("providerList", modelRouter.getProviders().stream()
-                .map(p -> p.name() + " (" + p.modelName() + ")").toList());
+        summary.put("totalProviders", chatService.getClients().size());
+        summary.put("providerList", chatService.getClients().stream()
+                .map(c -> c.name() + " (" + c.model() + ")").toList());
         summary.put("totalCalls", rounds);
         summary.put("success", success);
         summary.put("failed", failed);

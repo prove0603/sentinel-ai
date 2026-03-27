@@ -53,4 +53,9 @@ public class AnalysisController {
         analysisService.updateHandleStatus(id, status, note, handler);
         return Result.ok();
     }
+
+    @PostMapping("/reanalyze/{sqlRecordId}")
+    public Result<AnalysisDetailVo> reanalyze(@PathVariable Long sqlRecordId) {
+        return Result.ok(analysisService.analyzeByRecordId(sqlRecordId));
+    }
 }

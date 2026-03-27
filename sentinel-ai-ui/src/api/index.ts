@@ -43,7 +43,9 @@ export const analysisApi = {
     api.get(`/analysis/batch/${batchId}`, { params: { current, size } }),
   detail: (id: number) => api.get(`/analysis/${id}`),
   handle: (id: number, status: string, note?: string) =>
-    api.put(`/analysis/${id}/handle`, null, { params: { status, note } })
+    api.put(`/analysis/${id}/handle`, null, { params: { status, note } }),
+  reanalyze: (sqlRecordId: number) =>
+    api.post(`/analysis/reanalyze/${sqlRecordId}`, null, { timeout: 120000 }),
 }
 
 export const tableMetaApi = {
@@ -67,6 +69,15 @@ export const gitApi = {
 
 export const sqlRecordApi = {
   page: (params: any) => api.get('/sql-record/page', { params }),
+}
+
+export const exemptionApi = {
+  page: (params: any) => api.get('/exemption/page', { params }),
+  create: (data: any) => api.post('/exemption', data),
+  update: (id: number, data: any) => api.put(`/exemption/${id}`, data),
+  delete: (id: number) => api.delete(`/exemption/${id}`),
+  toggle: (id: number) => api.put(`/exemption/${id}/toggle`),
+  preview: (data: any, params?: any) => api.post('/exemption/preview', data, { params }),
 }
 
 export const knowledgeApi = {

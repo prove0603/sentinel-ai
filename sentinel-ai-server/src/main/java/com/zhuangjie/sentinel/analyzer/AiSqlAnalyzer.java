@@ -1,24 +1,23 @@
 package com.zhuangjie.sentinel.analyzer;
 
-import com.fasterxml.jackson.databind.DeserializationFeature;
-import com.fasterxml.jackson.databind.ObjectMapper;
-import com.zhuangjie.sentinel.analyzer.provider.ModelProvider.ModelResponse;
+import com.zhuangjie.sentinel.analyzer.MultiModelChatService.AiCallResult;
 import com.zhuangjie.sentinel.knowledge.KnowledgeContextBuilder;
 import com.zhuangjie.sentinel.knowledge.TableNameExtractor;
 import com.zhuangjie.sentinel.pojo.dto.ScannedSql;
-import com.zhuangjie.sentinel.rag.KnowledgeRagService;
 import com.zhuangjie.sentinel.pojo.dto.SqlRiskAssessment;
+import com.zhuangjie.sentinel.rag.KnowledgeRagService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.cache.Cache;
 import org.springframework.cache.CacheManager;
 import org.springframework.stereotype.Component;
 
-import java.util.*;
+import java.util.Set;
 
 /**
  * AI-powered SQL performance analysis.
- * Uses ModelRouter for round-robin multi-model rotation with automatic fallback.
+ * Uses {@link MultiModelChatService} for round-robin multi-model rotation with automatic fallback.
+ * Structured output is handled by Spring AI's {@link org.springframework.ai.converter.BeanOutputConverter}.
  * Caffeine cache prevents redundant calls for the same SQL hash.
  */
 @Slf4j
@@ -27,9 +26,6 @@ public class AiSqlAnalyzer {
 
     private static final String CACHE_NAME = "ai-sql-analysis";
     private static final int MAX_RETRIES = 1;
-
-    private static final ObjectMapper MAPPER = new ObjectMapper()
-            .configure(DeserializationFeature.FAIL_ON_UNKNOWN_PROPERTIES, false);
 
     static final String SYSTEM_PROMPT = """
             你是一个资深的 MySQL DBA，拥有 10 年以上数据库性能优化经验。
@@ -54,8 +50,8 @@ public class AiSqlAnalyzer {
             %s
 
             ## 分析要求
-            1. 给出风险等级：P0（紧急-必定慢SQL）/ P1（高危）/ P2（中危）/ P3（低危）/ P4（安全）
-            2. 判断是否能使用索引，若能使用则说明预计使用哪个索引
+            1. 给出风险等级（riskLevel）：P0（紧急-必定慢SQL）/ P1（高危）/ P2（中危）/ P3（低危）/ P4（安全）
+            2. 判断是否能使用索引（canUseIndex），若能使用则说明预计使用哪个索引（indexUsed）
             3. 估算扫描行数（estimatedScanRows）和执行时间（estimatedExecTimeMs，单位毫秒）
             4. 列出所有性能问题（issues 数组），包括但不限于：
                - 是否走索引、是否全表扫描
@@ -69,50 +65,36 @@ public class AiSqlAnalyzer {
             5. 给出索引创建建议（indexSuggestions 数组，用 SQL 语句表示）
             6. 给出 SQL 改写建议（rewriteSuggestions 数组，用改写后的 SQL 表示）
             7. 给出综合分析说明（explanation）
-
-            ## 响应格式
-            请严格以如下 JSON 格式回复，不要包含 markdown 代码块标记或其他内容：
-            {
-              "riskLevel": "P0~P4之一",
-              "canUseIndex": true或false,
-              "indexUsed": "预计使用的索引名，无则为null",
-              "estimatedScanRows": 数字,
-              "estimatedExecTimeMs": 数字,
-              "issues": ["问题1", "问题2"],
-              "indexSuggestions": ["CREATE INDEX idx_xxx ON table(col)"],
-              "rewriteSuggestions": ["改写后的SQL"],
-              "explanation": "综合分析说明"
-            }
             """;
 
-    private final ModelRouter modelRouter;
+    private final MultiModelChatService chatService;
     private final CacheManager cacheManager;
     private final KnowledgeContextBuilder knowledgeContextBuilder;
     private final KnowledgeRagService knowledgeRagService;
     private final TableNameExtractor tableNameExtractor;
 
-    public AiSqlAnalyzer(@Autowired(required = false) ModelRouter modelRouter,
+    public AiSqlAnalyzer(@Autowired(required = false) MultiModelChatService chatService,
                           CacheManager cacheManager,
                           @Autowired(required = false) KnowledgeContextBuilder knowledgeContextBuilder,
                           @Autowired(required = false) KnowledgeRagService knowledgeRagService,
                           @Autowired(required = false) TableNameExtractor tableNameExtractor) {
-        this.modelRouter = modelRouter;
+        this.chatService = chatService;
         this.cacheManager = cacheManager;
         this.knowledgeContextBuilder = knowledgeContextBuilder;
         this.knowledgeRagService = knowledgeRagService;
         this.tableNameExtractor = tableNameExtractor;
-        if (modelRouter == null) {
-            log.info("AI analysis disabled: ModelRouter not configured. Set sentinel.ai.enabled=true and configure providers.");
+        if (chatService == null) {
+            log.info("AI analysis disabled: MultiModelChatService not configured. Set sentinel.ai.enabled=true and configure providers.");
         } else {
-            log.info("AI analysis enabled with ModelRouter ({} providers), DDL context: {}, RAG: {}",
-                    modelRouter.getProviders().size(),
+            log.info("AI analysis enabled with {} providers, DDL context: {}, RAG: {}",
+                    chatService.getClients().size(),
                     knowledgeContextBuilder != null && knowledgeContextBuilder.isAvailable() ? "available" : "unavailable",
                     knowledgeRagService != null && knowledgeRagService.isRagAvailable() ? "available" : "unavailable");
         }
     }
 
     public boolean isAvailable() {
-        return modelRouter != null;
+        return chatService != null;
     }
 
     public AiAnalysisDetail analyze(String sqlHash, ScannedSql sql, String projectName) {
@@ -168,16 +150,17 @@ public class AiSqlAnalyzer {
     private AiAnalysisDetail callWithRetry(String promptText) {
         for (int attempt = 0; attempt <= MAX_RETRIES; attempt++) {
             try {
-                ModelResponse response = modelRouter.call(SYSTEM_PROMPT, promptText);
-                SqlRiskAssessment assessment = parseResponse(response.content());
+                AiCallResult<SqlRiskAssessment> result =
+                        chatService.call(SYSTEM_PROMPT, promptText, SqlRiskAssessment.class);
 
                 log.debug("AI analysis completed: riskLevel={}, model={}, tokens={}",
-                        assessment.riskLevel(), response.model(), response.tokensUsed());
-                return new AiAnalysisDetail(assessment, response.model(), response.tokensUsed());
+                        result.entity().riskLevel(), result.model(), result.tokensUsed());
+                return new AiAnalysisDetail(result.entity(), result.model(), result.tokensUsed());
 
             } catch (Exception e) {
                 if (attempt < MAX_RETRIES) {
-                    log.warn("AI call failed (attempt {}/{}), retrying: {}", attempt + 1, MAX_RETRIES + 1, e.getMessage());
+                    log.warn("AI call failed (attempt {}/{}), retrying: {}",
+                            attempt + 1, MAX_RETRIES + 1, e.getMessage());
                     sleep(1000L * (attempt + 1));
                 } else {
                     log.error("AI analysis failed after {} attempts: {}", MAX_RETRIES + 1, e.getMessage());
@@ -185,16 +168,6 @@ public class AiSqlAnalyzer {
             }
         }
         return null;
-    }
-
-    private SqlRiskAssessment parseResponse(String content) throws Exception {
-        String json = content
-                .replaceAll("(?s)```json\\s*", "")
-                .replaceAll("(?s)```\\s*", "")
-                .trim();
-
-        log.debug("AI raw response: {}", json);
-        return MAPPER.readValue(json, SqlRiskAssessment.class);
     }
 
     private void sleep(long millis) {

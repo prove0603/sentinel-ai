@@ -1,21 +1,30 @@
 package com.zhuangjie.sentinel.service;
 
+import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.zhuangjie.sentinel.analyzer.AiSqlAnalyzer;
+import com.zhuangjie.sentinel.analyzer.AiSqlAnalyzer.AiAnalysisDetail;
 import com.zhuangjie.sentinel.db.entity.ProjectConfig;
 import com.zhuangjie.sentinel.db.entity.SqlAnalysis;
 import com.zhuangjie.sentinel.db.entity.SqlRecord;
 import com.zhuangjie.sentinel.db.service.SqlAnalysisDbService;
 import com.zhuangjie.sentinel.db.service.SqlRecordDbService;
 import com.zhuangjie.sentinel.knowledge.KnowledgeContextBuilder;
+import com.zhuangjie.sentinel.pojo.dto.ScannedSql;
+import com.zhuangjie.sentinel.pojo.dto.SqlRiskAssessment;
+import com.zhuangjie.sentinel.pojo.enums.SqlSourceType;
 import com.zhuangjie.sentinel.pojo.vo.AnalysisDetailVo;
+import com.zhuangjie.sentinel.scanner.SqlNormalizer;
 import lombok.RequiredArgsConstructor;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDateTime;
 import java.util.List;
 
+@Slf4j
 @Service
 @RequiredArgsConstructor
 public class AnalysisService {
@@ -26,6 +35,9 @@ public class AnalysisService {
 
     @Autowired(required = false)
     private KnowledgeContextBuilder knowledgeContextBuilder;
+
+    @Autowired(required = false)
+    private AiSqlAnalyzer aiSqlAnalyzer;
 
     public Page<SqlAnalysis> pageByBatch(Long batchId, int current, int size) {
         return sqlAnalysisDbService.page(
@@ -107,5 +119,55 @@ public class AnalysisService {
         analysis.setHandler(handler);
         analysis.setHandleTime(LocalDateTime.now());
         return sqlAnalysisDbService.updateById(analysis);
+    }
+
+    public AnalysisDetailVo analyzeByRecordId(Long sqlRecordId) {
+        if (aiSqlAnalyzer == null || !aiSqlAnalyzer.isAvailable()) {
+            throw new IllegalStateException("AI 分析未启用，请检查配置");
+        }
+
+        SqlRecord record = sqlRecordDbService.getById(sqlRecordId);
+        if (record == null) {
+            throw new IllegalArgumentException("SQL 记录不存在: " + sqlRecordId);
+        }
+
+        ProjectConfig project = projectService.getById(record.getProjectId());
+        String projectName = project != null ? project.getProjectName() : null;
+
+        ScannedSql scannedSql = new ScannedSql(
+                record.getSqlText(),
+                record.getSqlNormalized(),
+                record.getSqlType(),
+                SqlSourceType.fromCode(record.getSourceType()),
+                record.getSourceFile(),
+                record.getSourceLocation()
+        );
+
+        String sqlHash = SqlNormalizer.hash(record.getSqlNormalized());
+        AiAnalysisDetail aiDetail = aiSqlAnalyzer.analyze(sqlHash, scannedSql, projectName);
+        if (aiDetail == null) {
+            throw new RuntimeException("AI 分析调用失败，请检查日志");
+        }
+
+        SqlRiskAssessment ai = aiDetail.assessment();
+        SqlAnalysis analysis = new SqlAnalysis();
+        analysis.setSqlRecordId(record.getId());
+        analysis.setAiRiskLevel(ai.riskLevel());
+        analysis.setAiAnalysis(ai.explanation());
+        analysis.setAiIndexSuggestion(JSONUtil.toJsonStr(ai.indexSuggestions()));
+        analysis.setAiRewriteSuggestion(JSONUtil.toJsonStr(ai.rewriteSuggestions()));
+        analysis.setAiEstimatedScanRows(ai.estimatedScanRows());
+        analysis.setAiEstimatedExecTimeMs(ai.estimatedExecTimeMs());
+        analysis.setAiModel(aiDetail.model());
+        analysis.setAiTokensUsed(aiDetail.tokensUsed());
+        analysis.setFinalRiskLevel(ai.riskLevel());
+        analysis.setHandleStatus("ANALYZED");
+        analysis.setCreateTime(LocalDateTime.now());
+        sqlAnalysisDbService.save(analysis);
+
+        log.info("Manual AI analysis completed: sqlRecordId={}, riskLevel={}, model={}, tokens={}",
+                sqlRecordId, ai.riskLevel(), aiDetail.model(), aiDetail.tokensUsed());
+
+        return getDetail(analysis.getId());
     }
 }

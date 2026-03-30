@@ -16,6 +16,23 @@ spring:
     chat:
       client:
         enabled: false
+    mcp:
+      server:
+        enabled: true
+        name: sentinel-ai-mcp-server
+        version: 1.0.0
+        protocol: STREAMABLE
+        type: SYNC
+        instructions: >
+          Sentinel AI SQL分析服务器 — 提供SQL性能分析、风险检测、项目管理等工具。
+          可以查询有风险的SQL、获取分析详情、查看项目概览等。
+        capabilities:
+          tool: true
+          resource: false
+          prompt: false
+          completion: false
+        streamable-http:
+          mcp-endpoint: /mcp
 sentinel:
   ai:
     enabled: false

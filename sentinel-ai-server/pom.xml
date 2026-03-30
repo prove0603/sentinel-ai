@@ -106,6 +106,12 @@
             <optional>true</optional>
         </dependency>
 
+        <!-- MCP Server (Streamable HTTP via WebMVC) -->
+        <dependency>
+            <groupId>org.springframework.ai</groupId>
+            <artifactId>spring-ai-starter-mcp-server-webmvc</artifactId>
+        </dependency>
+
         <!-- Test -->
         <dependency>
             <groupId>org.springframework.boot</groupId>

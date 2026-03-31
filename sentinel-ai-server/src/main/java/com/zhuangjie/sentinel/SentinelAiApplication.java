@@ -7,7 +7,13 @@ import org.springframework.scheduling.annotation.EnableAsync;
 
 @EnableAsync
 @EnableCaching
-@SpringBootApplication
+@SpringBootApplication(exclude = {
+        org.springframework.ai.model.openai.autoconfigure.OpenAiAudioSpeechAutoConfiguration.class,
+        org.springframework.ai.model.openai.autoconfigure.OpenAiAudioTranscriptionAutoConfiguration.class,
+        org.springframework.ai.model.openai.autoconfigure.OpenAiImageAutoConfiguration.class,
+        org.springframework.ai.model.openai.autoconfigure.OpenAiModerationAutoConfiguration.class,
+        org.springframework.ai.model.openai.autoconfigure.OpenAiChatAutoConfiguration.class,
+})
 public class SentinelAiApplication {
 
     public static void main(String[] args) {

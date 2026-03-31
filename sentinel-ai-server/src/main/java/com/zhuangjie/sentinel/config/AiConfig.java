@@ -1,6 +1,5 @@
 package com.zhuangjie.sentinel.config;
 
-import com.alibaba.dashscope.aigc.multimodalconversation.MultiModalConversation;
 import com.zhuangjie.sentinel.analyzer.MultiModelChatService;
 import com.zhuangjie.sentinel.analyzer.MultiModelChatService.NamedChatClient;
 import com.zhuangjie.sentinel.analyzer.advisor.AiLoggingAdvisor;
@@ -28,15 +27,6 @@ public class AiConfig {
     private String apiKey;
     private float temperature = 0.2f;
     private List<ProviderConfig> providers = new ArrayList<>();
-
-    /**
-     * Kept for backward compatibility — DashScope SDK is still used by RAG embedding.
-     */
-    @Bean
-    @ConditionalOnProperty(name = "sentinel.ai.enabled", havingValue = "true")
-    public MultiModalConversation multiModalConversation() {
-        return new MultiModalConversation();
-    }
 
     @Bean
     @ConditionalOnProperty(name = "sentinel.ai.enabled", havingValue = "true")

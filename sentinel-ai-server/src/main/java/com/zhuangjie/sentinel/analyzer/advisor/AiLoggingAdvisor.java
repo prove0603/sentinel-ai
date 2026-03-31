@@ -31,9 +31,9 @@ public class AiLoggingAdvisor implements CallAdvisor {
         if (chatResponse != null && chatResponse.getMetadata() != null
                 && chatResponse.getMetadata().getUsage() != null) {
             var usage = chatResponse.getMetadata().getUsage();
-            log.info("[{}] AI call completed: {}ms, promptTokens={}, generationTokens={}, totalTokens={}",
+            log.info("[{}] AI call completed: {}ms, promptTokens={}, completionTokens={}, totalTokens={}",
                     providerName, elapsed,
-                    usage.getPromptTokens(), usage.getGenerationTokens(), usage.getTotalTokens());
+                    usage.getPromptTokens(), usage.getCompletionTokens(), usage.getTotalTokens());
         } else {
             log.info("[{}] AI call completed: {}ms", providerName, elapsed);
         }

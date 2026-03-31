@@ -4,6 +4,9 @@ spring:
     url: jdbc:postgresql://localhost:5432/sentinel_ai
     username: postgres
     password: your-db-password
+  ai:
+    openai:
+      api-key: ${AI_DASHSCOPE_API_KEY:your-dashscope-api-key}
 
 sentinel:
   ai:

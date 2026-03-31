@@ -138,7 +138,8 @@ public class MultiModelChatService {
     private int extractTokens(ChatResponse response) {
         try {
             if (response.getMetadata() != null && response.getMetadata().getUsage() != null) {
-                Long total = response.getMetadata().getUsage().getTotalTokens();
+                var usage = response.getMetadata().getUsage();
+                Number total = usage.getTotalTokens();
                 return total != null ? total.intValue() : 0;
             }
         } catch (Exception e) {

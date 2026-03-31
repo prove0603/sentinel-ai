@@ -35,13 +35,7 @@
             <artifactId>spring-boot-starter-cache</artifactId>
         </dependency>
 
-        <!-- AI - DashScope SDK (Embedding only: TextEmbedding for RAG vectorization) -->
-        <dependency>
-            <groupId>com.alibaba</groupId>
-            <artifactId>dashscope-sdk-java</artifactId>
-        </dependency>
-
-        <!-- Spring AI - OpenAI compatible ChatClient (Chat calls via DashScope compatible-mode) -->
+        <!-- Spring AI - OpenAI compatible (Chat + Embedding via DashScope compatible-mode) -->
         <dependency>
             <groupId>org.springframework.ai</groupId>
             <artifactId>spring-ai-starter-model-openai</artifactId>

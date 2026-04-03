@@ -29,7 +29,7 @@ alwaysApply: false
 | AI SDK | DashScope SDK（仅 Embedding：TextEmbedding for RAG 向量化） | 2.22.7 |
 | AI 模型 | 多模型轮询：qwen3.5-plus / qwen3-coder-plus / qwen3-max / qwen-plus / qwen-flash / qwen3-max-preview | - |
 | Embedding 模型 | DashScope text-embedding-v3 (1024维) | - |
-| RAG 框架 | Spring AI (vanilla, 非 Alibaba) | 1.1.4 |
+| RAG 框架 | Spring AI（也可按需引入 spring-ai-alibaba） | 1.1.4 |
 | MCP Server | Spring AI MCP Server（Streamable HTTP） | 1.1.4 |
 | 向量数据库 | PostgreSQL + pgvector | PG18 |
 | ORM | MyBatis-Plus | 3.5.7 |
@@ -212,8 +212,8 @@ sentinel-ai/
   - 异步执行（`@Async`），新建 SqlAnalysis 记录，标注 "DDL change re-analysis"
 
 ### RAG 业务知识库 — ✅ P6 已实现
-- **架构决策：** Spring AI (vanilla) + 自定义 DashScope Embedding 适配器 + PGVector
-  - 不用 Spring AI Alibaba：避免 ChatModel 自动配置冲突，减少依赖链
+- **架构决策：** Spring AI + 自定义 DashScope Embedding 适配器 + PGVector
+  - 当前通过 DashScope SDK 自写适配器实现 Embedding，也可按需引入 spring-ai-alibaba 替代
   - DashScope SDK 已有 `TextEmbedding` API，写适配器 ~100 行即可
 - **向量数据库：** PostgreSQL + pgvector，通过 Docker 部署（`docker-compose.yml`）
 - **Embedding：** DashScope `text-embedding-v3`，1024 维，余弦距离，HNSW 索引
@@ -439,7 +439,7 @@ table-meta/
   - ✅ AnalysisDetailVo：新增 projectName 字段
   - ✅ updateHandleStatus 自动记录 handleTime
 - **P6：** RAG 业务知识库 ← **✅ 已完成**
-  - ✅ 技术选型：Spring AI (vanilla, 非 Alibaba) + 自定义 DashScope Embedding 适配器 + PGVector
+  - ✅ 技术选型：Spring AI + 自定义 DashScope Embedding 适配器 + PGVector（也可按需引入 spring-ai-alibaba）
   - ✅ Docker 部署：`docker-compose.yml` 提供 PostgreSQL + pgvector 容器
   - ✅ `DashScopeEmbeddingModel` — DashScope SDK TextEmbedding → Spring AI EmbeddingModel 适配器
   - ✅ `RagConfig` — PG DataSource + JdbcTemplate + PgVectorStore（1024维，HNSW，余弦距离）

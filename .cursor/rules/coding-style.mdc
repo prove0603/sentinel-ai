@@ -1,0 +1,38 @@
+---
+description: Sentinel AI 编码风格与注释规范
+globs: "**/sentinel-ai/**"
+alwaysApply: true
+---
+
+# 编码风格与注释规范
+
+## 注释语言
+
+- **所有代码注释必须使用中文**，包括：
+  - 类级别 Javadoc
+  - 方法级别 Javadoc
+  - 行内注释
+  - TODO / FIXME
+- **日志消息**保持英文（便于日志搜索和国际化）
+- **前端代码注释**也使用中文
+
+## 注释原则
+
+- 只对**非显而易见的逻辑**加注释，不对简单 CRUD、getter/setter 等加注释
+- 核心 AI 业务逻辑（分析、RAG、Embedding、多模型调用等）必须有中文注释说明意图
+- 测试相关的代码（Controller 接口、Service 方法）在类或方法上标注 `【测试用】` 前缀
+
+## Java 编码规范
+
+- Java 21 特性：record、sealed interface、pattern matching、文本块
+- 构造器注入：`@RequiredArgsConstructor`
+- 统一响应：`Result<T>` 和 `PageResult<T>`
+- GroupId：`com.zhuangjie`，禁止使用 `com.al.risk`
+- 代码和注释中禁止出现公司内部信息
+
+## 前端编码规范
+
+- Composition API + `<script setup lang="ts">`
+- Element Plus 组件库，中文 locale
+- API 层统一封装在 `src/api/index.ts`
+- 时间格式化统一使用 `utils/format.ts`

@@ -13,12 +13,13 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Builds table-structure context for AI prompts by reading DDL files from disk.
+ * DDL 表结构上下文构建器。
  * <p>
- * Directory layout: {@code {table-meta-dir}/{table_name}.sql}
+ * 从磁盘读取 DDL 文件，为 AI 分析 prompt 构建表结构上下文。
+ * 目录结构：{@code {table-meta-dir}/{table_name}.sql}（扁平目录，每张表一个文件）
  * <p>
- * Each .sql file contains SHOW CREATE TABLE output with an optional
- * {@code -- Estimated Rows: N} header comment.
+ * DDL 文件格式：{@code -- Estimated Rows: N} 头部注释 + SHOW CREATE TABLE 输出。
+ * 支持分表智能匹配：如 t_log_202603 会自动匹配 t_log.sql。
  */
 @Slf4j
 @Component
@@ -47,10 +48,8 @@ public class KnowledgeContextBuilder {
     }
 
     /**
-     * Builds a context string containing relevant table structures for the given SQL.
-     *
-     * @param sql the normalized SQL text
-     * @return formatted context string, or empty string if no context found
+     * 根据 SQL 中引用的表名，从 DDL 文件读取表结构，构建 AI prompt 上下文。
+     * 流程：提取表名 → 查找 DDL 文件（含分表匹配） → 读取内容 → 格式化为上下文字符串。
      */
     public String buildContext(String sql) {
         Set<String> tableNames = tableNameExtractor.extract(sql);
@@ -94,9 +93,7 @@ public class KnowledgeContextBuilder {
     }
 
     /**
-     * Resolves a DDL file for the given table name:
-     * 1. Exact match: {tableName}.sql
-     * 2. Shard fallback: strip numeric suffix and try base table (e.g. t_log_202603 → t_log.sql)
+     * 解析 DDL 文件路径：先精确匹配，未找到则尝试去除分表后缀匹配基础表。
      */
     private Path resolveDdlFile(Path projectDir, String tableName) {
         Path exact = projectDir.resolve(tableName + ".sql");

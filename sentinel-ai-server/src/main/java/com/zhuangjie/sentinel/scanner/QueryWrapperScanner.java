@@ -60,13 +60,14 @@ public class QueryWrapperScanner implements SqlScanner {
             Map.entry("notLike", "%s NOT LIKE CONCAT('%%', ?, '%%')"),
             Map.entry("between", "%s BETWEEN ? AND ?"),
             Map.entry("notBetween", "%s NOT BETWEEN ? AND ?"),
-            Map.entry("in", "%s IN (?)"),
-            Map.entry("notIn", "%s NOT IN (?)"),
+            Map.entry("in", "%s IN (?, ?, ?)"),
+            Map.entry("notIn", "%s NOT IN (?, ?, ?)"),
             Map.entry("isNull", "%s IS NULL"),
-            Map.entry("isNotNull", "%s IS NOT NULL"),
-            Map.entry("exists", "EXISTS (?)"),
-            Map.entry("notExists", "NOT EXISTS (?)")
+            Map.entry("isNotNull", "%s IS NOT NULL")
     );
+
+    /** exists/notExists 没有列名参数，单独处理 */
+    private static final Set<String> EXISTS_METHODS = Set.of("exists", "notExists");
 
     private static final Set<String> ORDER_METHODS = Set.of("orderByAsc", "orderByDesc", "orderBy");
     private static final Set<String> GROUP_METHODS = Set.of("groupBy");
@@ -129,8 +130,9 @@ public class QueryWrapperScanner implements SqlScanner {
             String sourceLocation = className + "." + method.getNameAsString();
 
             List<WrapperUsage> usages = new ArrayList<>();
-            collectInlineChains(method, usages);
-            collectVariableBasedUsages(method, usages);
+            Set<String> inlineChainVarNames = new HashSet<>();
+            collectInlineChains(method, usages, inlineChainVarNames);
+            collectVariableBasedUsages(method, usages, inlineChainVarNames);
 
             for (WrapperUsage usage : usages) {
                 String pseudoSql = buildPseudoSql(usage, tableNameMap);
@@ -156,10 +158,14 @@ public class QueryWrapperScanner implements SqlScanner {
     // ==================== Inline Chain Detection ====================
 
     /**
-     * Detects inline wrapper chains like:
+     * 检测内联链式调用，如：
      * {@code mapper.selectList(new QueryWrapper<User>().eq("name", val).like("email", val))}
+     * <p>
+     * 如果内联链所在的表达式被赋值给变量（如 {@code QueryWrapper qw = new QW<>().in(...)}），
+     * 将变量名记入 inlineChainVarNames，避免 collectVariableBasedUsages 重复采集。
      */
-    private void collectInlineChains(MethodDeclaration method, List<WrapperUsage> usages) {
+    private void collectInlineChains(MethodDeclaration method, List<WrapperUsage> usages,
+                                      Set<String> inlineChainVarNames) {
         method.findAll(ObjectCreationExpr.class).forEach(creation -> {
             String typeName = extractSimpleTypeName(creation.getType());
             if (!WRAPPER_TYPES.contains(typeName)) {
@@ -170,7 +176,6 @@ public class QueryWrapperScanner implements SqlScanner {
             WrapperUsage usage = new WrapperUsage(typeName, isLambda);
             usage.entityName = extractGenericTypeName(creation.getType());
 
-            // Diamond operator fallback: try to resolve from variable declaration type
             if (usage.entityName == null) {
                 usage.entityName = resolveEntityFromContext(creation);
             }
@@ -181,15 +186,44 @@ public class QueryWrapperScanner implements SqlScanner {
                     && parentCall.getScope().isPresent()
                     && parentCall.getScope().get() == current) {
                 processMethodCall(parentCall, usage);
-                // Try to infer entity name from lambda method reference scope (e.g. User::getName → User)
                 if (usage.entityName == null && isLambda) {
                     usage.entityName = inferEntityFromMethodRef(parentCall);
                 }
                 current = parentCall;
             }
 
+            // 只有存在内联链调用时（current 已被向上遍历），才记录变量名以避免重复采集
+            boolean hasInlineCalls = current != creation;
+
+            if (hasInlineCalls && current.getParentNode().isPresent()
+                    && current.getParentNode().get() instanceof VariableDeclarator varDecl) {
+                inlineChainVarNames.add(varDecl.getNameAsString());
+            }
+
             if (usage.hasContent()) {
+                // 如果被赋值给变量，还需要收集后续的变量方法调用（合并到同一个 usage）
+                if (current.getParentNode().isPresent()
+                        && current.getParentNode().get() instanceof VariableDeclarator varDecl) {
+                    String varName = varDecl.getNameAsString();
+                    collectVariableCallsIntoUsage(method, varName, usage);
+                }
                 usages.add(usage);
+            }
+        });
+    }
+
+    /**
+     * 将变量后续的方法调用合并到已有的 WrapperUsage 中。
+     * 用于 {@code QueryWrapper qw = new QW<>().in(...); qw.eq(...);} 场景。
+     */
+    private void collectVariableCallsIntoUsage(MethodDeclaration method, String varName, WrapperUsage usage) {
+        method.findAll(MethodCallExpr.class).forEach(call -> {
+            String rootVar = resolveChainRootVariable(call);
+            if (varName.equals(rootVar)) {
+                processMethodCall(call, usage);
+                if (usage.entityName == null && usage.isLambda) {
+                    usage.entityName = inferEntityFromMethodRef(call);
+                }
             }
         });
     }
@@ -197,19 +231,20 @@ public class QueryWrapperScanner implements SqlScanner {
     // ==================== Variable-Based Detection ====================
 
     /**
-     * Detects variable-based wrapper usage like:
-     * <pre>
-     * QueryWrapper&lt;User&gt; wrapper = new QueryWrapper&lt;&gt;();
-     * wrapper.eq("name", name);
-     * wrapper.like("email", email);
-     * </pre>
+     * 检测变量式 wrapper 用法（跳过已被内联链检测处理的变量）。
      */
-    private void collectVariableBasedUsages(MethodDeclaration method, List<WrapperUsage> usages) {
+    private void collectVariableBasedUsages(MethodDeclaration method, List<WrapperUsage> usages,
+                                             Set<String> inlineChainVarNames) {
         Map<String, WrapperUsage> variableMap = new LinkedHashMap<>();
 
         method.findAll(VariableDeclarator.class).forEach(varDecl -> {
             String typeName = extractTypeFromDeclarator(varDecl);
             if (typeName == null || !WRAPPER_TYPES.contains(typeName)) {
+                return;
+            }
+
+            // 已被 collectInlineChains 处理的变量，跳过
+            if (inlineChainVarNames.contains(varDecl.getNameAsString())) {
                 return;
             }
 
@@ -226,7 +261,6 @@ public class QueryWrapperScanner implements SqlScanner {
 
             boolean isLambda = LAMBDA_WRAPPERS.contains(typeName);
             WrapperUsage wu = new WrapperUsage(typeName, isLambda);
-            // Extract entity type from generic: QueryWrapper<Queue> → Queue
             if (varDecl.getType() instanceof ClassOrInterfaceType classType) {
                 wu.entityName = extractGenericTypeName(classType);
             }
@@ -238,18 +272,16 @@ public class QueryWrapperScanner implements SqlScanner {
         }
 
         method.findAll(MethodCallExpr.class).forEach(call -> {
-            call.getScope().ifPresent(scope -> {
-                if (scope instanceof NameExpr nameExpr) {
-                    String varName = nameExpr.getNameAsString();
-                    WrapperUsage usage = variableMap.get(varName);
-                    if (usage != null) {
-                        processMethodCall(call, usage);
-                        if (usage.entityName == null && usage.isLambda) {
-                            usage.entityName = inferEntityFromMethodRef(call);
-                        }
+            String rootVar = resolveChainRootVariable(call);
+            if (rootVar != null) {
+                WrapperUsage usage = variableMap.get(rootVar);
+                if (usage != null) {
+                    processMethodCall(call, usage);
+                    if (usage.entityName == null && usage.isLambda) {
+                        usage.entityName = inferEntityFromMethodRef(call);
                     }
                 }
-            });
+            }
         });
 
         variableMap.values().stream()
@@ -262,7 +294,9 @@ public class QueryWrapperScanner implements SqlScanner {
     private void processMethodCall(MethodCallExpr call, WrapperUsage usage) {
         String methodName = call.getNameAsString();
 
-        if (CONDITION_TEMPLATES.containsKey(methodName)) {
+        if (EXISTS_METHODS.contains(methodName)) {
+            processExistsCall(call, methodName, usage);
+        } else if (CONDITION_TEMPLATES.containsKey(methodName)) {
             processConditionCall(call, methodName, usage);
         } else if ("select".equals(methodName)) {
             processSelectCall(call, usage);
@@ -303,6 +337,35 @@ public class QueryWrapperScanner implements SqlScanner {
             usage.hasDynamicConditions = true;
         }
         usage.conditions.add(condition);
+    }
+
+    /**
+     * 处理 exists(sql) / exists(condition, sql, params...) / notExists(sql)。
+     * exists 的参数是子查询 SQL 字符串，不是列名，需要单独提取。
+     */
+    private void processExistsCall(MethodCallExpr call, String methodName, WrapperUsage usage) {
+        List<Expression> args = call.getArguments();
+        boolean hasConditionParam = hasLeadingBooleanParam(args);
+        int sqlArgIndex = hasConditionParam ? 1 : 0;
+
+        if (sqlArgIndex >= args.size()) {
+            usage.conditions.add("notExists".equals(methodName) ? "NOT EXISTS (?)" : "EXISTS (?)");
+            return;
+        }
+
+        Expression sqlArg = args.get(sqlArgIndex);
+        String subSql;
+        if (sqlArg instanceof StringLiteralExpr str) {
+            subSql = str.getValue().replaceAll("\\{\\d+}", "?");
+        } else {
+            subSql = "?";
+        }
+
+        String prefix = "notExists".equals(methodName) ? "NOT EXISTS" : "EXISTS";
+        usage.conditions.add(prefix + " (" + subSql + ")");
+        if (hasConditionParam) {
+            usage.hasDynamicConditions = true;
+        }
     }
 
     private void processSelectCall(MethodCallExpr call, WrapperUsage usage) {
@@ -392,6 +455,26 @@ public class QueryWrapperScanner implements SqlScanner {
         if (sqlArgIndex < args.size() && args.get(sqlArgIndex) instanceof StringLiteralExpr str) {
             usage.setClauses.add(str.getValue().replaceAll("\\{\\d+}", "?"));
         }
+    }
+
+    /**
+     * 从链式调用中解析出根变量名。
+     * 例如 {@code wrapper.set(A).set(B).eq(C)} 中，所有节点的根变量都是 "wrapper"。
+     * 沿 scope 链向下遍历直到找到 NameExpr（变量名）。
+     */
+    private String resolveChainRootVariable(MethodCallExpr call) {
+        Expression current = call;
+        while (current instanceof MethodCallExpr mce) {
+            if (mce.getScope().isEmpty()) {
+                return null;
+            }
+            Expression scope = mce.getScope().get();
+            if (scope instanceof NameExpr nameExpr) {
+                return nameExpr.getNameAsString();
+            }
+            current = scope;
+        }
+        return null;
     }
 
     // ==================== Entity Inference ====================

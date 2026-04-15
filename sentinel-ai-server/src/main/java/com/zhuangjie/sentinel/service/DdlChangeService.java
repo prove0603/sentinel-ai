@@ -22,9 +22,10 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * Handles re-analysis of SQL statements affected by DDL changes.
- * When table structure changes, finds all SQL records referencing those tables
- * and triggers AI re-analysis.
+ * DDL 变更感知服务。
+ * <p>
+ * 当表结构 DDL 发生变更时，遍历所有活跃的 SQL 记录，找出引用了变更表的 SQL，
+ * 异步触发 AI 重新分析。确保 DDL 变更后，风险评估结果能及时更新。
  */
 @Slf4j
 @Service
@@ -39,12 +40,10 @@ public class DdlChangeService {
     private TableNameExtractor tableNameExtractor;
 
     /**
-     * Re-analyzes all SQL records that reference the given changed tables.
-     * Runs asynchronously.
+     * 异步重新分析所有引用了变更表的 SQL 记录。
      *
-     * @param changedTables list of table names whose DDL changed
-     * @param projectName   the project name (for AI context)
-     * @return number of SQL records re-analyzed
+     * @param changedTables DDL 发生变更的表名列表
+     * @param projectName   项目名称（用于 AI 上下文构建）
      */
     @Async
     public void reAnalyzeAffectedSqls(List<String> changedTables, String projectName) {

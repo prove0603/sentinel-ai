@@ -127,14 +127,25 @@ public class ScanService {
 
     // ==================== Full Scan ====================
 
+    /**
+     * 全量扫描（upsert 模式）：
+     * 1. 扫描所有源码提取 SQL
+     * 2. 对每条 SQL 按 sqlHash 判断 DB 中是否已有活跃记录：
+     *    - 已存在且有分析结果 → 更新 lastScanId，跳过 AI（计入 reused）
+     *    - 已存在但无分析结果 → 更新 lastScanId + 源码位置，调 AI 补充分析
+     *    - 不存在 → 新建 SqlRecord + 调 AI
+     * 3. 将本次未扫描到但之前存在的 SQL 标记为 removed（status=0）
+     */
     private void doFullScan(ScanBatch batch, ProjectConfig project, Path projectRoot) {
         List<ScannedSql> scannedSqls = scanAllSources(projectRoot);
 
+        int newCount = 0;
         int riskCount = 0;
         int aiAnalyzedCount = 0;
         int reusedCount = 0;
         int exemptedCount = 0;
         Set<String> seenHashes = new HashSet<>();
+        Set<String> scannedHashesThisBatch = new HashSet<>();
 
         for (ScannedSql scannedSql : scannedSqls) {
             String sqlHash = SqlNormalizer.hash(scannedSql.sqlNormalized());
@@ -157,37 +168,62 @@ public class ScanService {
                 continue;
             }
 
-            SqlRecord record = saveSqlRecord(scannedSql, sqlHash, project.getId(), batch.getId());
+            scannedHashesThisBatch.add(sqlHash);
 
-            SqlAnalysis reused = reuseExistingAnalysis(sqlHash, record.getId(), batch.getId());
-            if (reused != null) {
-                reusedCount++;
-                if (isHighRisk(reused.getFinalRiskLevel())) {
-                    riskCount++;
-                }
-                continue;
-            }
+            SqlRecord existing = findExistingRecord(project.getId(), sqlHash);
+            if (existing != null) {
+                existing.setLastScanId(batch.getId());
+                existing.setSourceFile(scannedSql.sourceFile());
+                existing.setSourceLocation(scannedSql.sourceLocation());
+                existing.setUpdateTime(LocalDateTime.now());
+                sqlRecordDbService.updateById(existing);
 
-            if (shouldInvokeAi(aiAnalyzedCount)) {
-                AiAnalysisDetail aiDetail = aiSqlAnalyzer.analyze(sqlHash, scannedSql, project.getProjectName());
-                if (aiDetail != null) {
-                    saveAiAnalysisResult(record, batch.getId(), aiDetail);
-                    aiAnalyzedCount++;
-                    if (isHighRisk(aiDetail.assessment().riskLevel())) {
+                SqlAnalysis existingAnalysis = findLatestAnalysis(existing.getId());
+                if (existingAnalysis != null) {
+                    reusedCount++;
+                    if (isHighRisk(existingAnalysis.getFinalRiskLevel())) {
                         riskCount++;
+                    }
+                    continue;
+                }
+
+                if (shouldInvokeAi(aiAnalyzedCount)) {
+                    AiAnalysisDetail aiDetail = aiSqlAnalyzer.analyze(sqlHash, scannedSql, project.getProjectName());
+                    if (aiDetail != null) {
+                        saveAiAnalysisResult(existing, batch.getId(), aiDetail);
+                        aiAnalyzedCount++;
+                        if (isHighRisk(aiDetail.assessment().riskLevel())) {
+                            riskCount++;
+                        }
+                    }
+                }
+            } else {
+                SqlRecord record = saveSqlRecord(scannedSql, sqlHash, project.getId(), batch.getId());
+                newCount++;
+
+                if (shouldInvokeAi(aiAnalyzedCount)) {
+                    AiAnalysisDetail aiDetail = aiSqlAnalyzer.analyze(sqlHash, scannedSql, project.getProjectName());
+                    if (aiDetail != null) {
+                        saveAiAnalysisResult(record, batch.getId(), aiDetail);
+                        aiAnalyzedCount++;
+                        if (isHighRisk(aiDetail.assessment().riskLevel())) {
+                            riskCount++;
+                        }
                     }
                 }
             }
         }
 
+        int removedCount = markRemovedInFullScan(project.getId(), batch.getId(), scannedHashesThisBatch);
+
         batch.setTotalSqlCount(seenHashes.size());
-        batch.setNewSqlCount(seenHashes.size());
+        batch.setNewSqlCount(newCount);
         batch.setChangedSqlCount(0);
-        batch.setRemovedSqlCount(0);
+        batch.setRemovedSqlCount(removedCount);
         batch.setRiskSqlCount(riskCount);
 
-        log.info("Full scan completed: batchId={}, totalSql={}, riskSql={}, aiAnalyzed={}, reused={}, exempted={}",
-                batch.getId(), seenHashes.size(), riskCount, aiAnalyzedCount, reusedCount, exemptedCount);
+        log.info("Full scan completed: batchId={}, totalSql={}, newSql={}, riskSql={}, aiAnalyzed={}, reused={}, exempted={}, removed={}",
+                batch.getId(), seenHashes.size(), newCount, riskCount, aiAnalyzedCount, reusedCount, exemptedCount, removedCount);
     }
 
     // ==================== Incremental Scan ====================
@@ -388,14 +424,58 @@ public class ScanService {
         return all;
     }
 
-    // ==================== Persistent Analysis Cache ====================
+    // ==================== Record Lookup & Analysis Cache ====================
 
     /**
-     * Checks if the same SQL (by hash) has already been analyzed in a previous scan.
-     * If found, creates a new SqlAnalysis record that copies the AI results,
-     * avoiding a redundant AI call.
-     *
-     * @return the reused SqlAnalysis, or null if no prior analysis exists
+     * 按 sqlHash 查找项目中已存在的活跃 SqlRecord（用于 upsert 判断）。
+     */
+    private SqlRecord findExistingRecord(Long projectId, String sqlHash) {
+        return sqlRecordDbService.getOne(
+                new LambdaQueryWrapper<SqlRecord>()
+                        .eq(SqlRecord::getProjectId, projectId)
+                        .eq(SqlRecord::getSqlHash, sqlHash)
+                        .eq(SqlRecord::getStatus, 1)
+                        .last("LIMIT 1"));
+    }
+
+    /**
+     * 查找某条 SqlRecord 的最新分析结果。
+     */
+    private SqlAnalysis findLatestAnalysis(Long sqlRecordId) {
+        return sqlAnalysisDbService.getOne(
+                new LambdaQueryWrapper<SqlAnalysis>()
+                        .eq(SqlAnalysis::getSqlRecordId, sqlRecordId)
+                        .orderByDesc(SqlAnalysis::getCreateTime)
+                        .last("LIMIT 1"));
+    }
+
+    /**
+     * 全量扫描结束后，将本次未扫到的 SQL 标记为 removed（status=0）。
+     * 说明该 SQL 已从源码中删除。
+     */
+    private int markRemovedInFullScan(Long projectId, Long batchId, Set<String> scannedHashes) {
+        List<SqlRecord> allActive = sqlRecordDbService.list(
+                new LambdaQueryWrapper<SqlRecord>()
+                        .eq(SqlRecord::getProjectId, projectId)
+                        .eq(SqlRecord::getStatus, 1));
+        int removedCount = 0;
+        for (SqlRecord record : allActive) {
+            if (!scannedHashes.contains(record.getSqlHash())) {
+                record.setStatus(0);
+                record.setUpdateTime(LocalDateTime.now());
+                sqlRecordDbService.updateById(record);
+                removedCount++;
+            }
+        }
+        if (removedCount > 0) {
+            log.info("Full scan: marked {} SQL records as removed (no longer in source code)", removedCount);
+        }
+        return removedCount;
+    }
+
+    /**
+     * 增量扫描用：检查同一 SQL（按 hash）是否在之前的扫描中已被分析过。
+     * 若存在历史分析结果，复制一份关联到新的 SqlRecord，避免重复调用 AI。
      */
     private SqlAnalysis reuseExistingAnalysis(String sqlHash, Long newRecordId, Long batchId) {
         List<SqlRecord> priorRecords = sqlRecordDbService.list(
@@ -409,11 +489,7 @@ public class ScanService {
         }
 
         SqlRecord priorRecord = priorRecords.get(0);
-        SqlAnalysis priorAnalysis = sqlAnalysisDbService.getOne(
-                new LambdaQueryWrapper<SqlAnalysis>()
-                        .eq(SqlAnalysis::getSqlRecordId, priorRecord.getId())
-                        .orderByDesc(SqlAnalysis::getCreateTime)
-                        .last("LIMIT 1"));
+        SqlAnalysis priorAnalysis = findLatestAnalysis(priorRecord.getId());
         if (priorAnalysis == null) {
             return null;
         }

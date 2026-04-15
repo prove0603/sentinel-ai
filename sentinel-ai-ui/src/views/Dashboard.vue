@@ -16,13 +16,23 @@
       </el-col>
       <el-col :span="6">
         <el-card shadow="hover">
-          <template #header>风险 SQL</template>
+          <template #header>
+            <span>风险 SQL</span>
+            <el-tooltip content="包含 P0(紧急)、P1(高危)、P2(中危) 等级的 SQL" placement="top">
+              <el-icon style="margin-left: 4px; vertical-align: middle; cursor: help;"><QuestionFilled /></el-icon>
+            </el-tooltip>
+          </template>
           <div class="stat-number danger">{{ overview.riskSqlCount ?? '-' }}</div>
         </el-card>
       </el-col>
       <el-col :span="6">
         <el-card shadow="hover">
-          <template #header>待处理 (P0/P1)</template>
+          <template #header>
+            <span>待处理 (P0/P1)</span>
+            <el-tooltip content="P0: 紧急-必定慢SQL | P1: 高危-大概率慢SQL，需优先处理" placement="top">
+              <el-icon style="margin-left: 4px; vertical-align: middle; cursor: help;"><QuestionFilled /></el-icon>
+            </el-tooltip>
+          </template>
           <div class="stat-number warning">{{ overview.pendingCount ?? '-' }}</div>
         </el-card>
       </el-col>

@@ -47,6 +47,11 @@ const router = createRouter({
       path: '/exemptions',
       name: 'Exemptions',
       component: () => import('../views/Exemptions.vue')
+    },
+    {
+      path: '/prompts',
+      name: 'Prompts',
+      component: () => import('../views/Prompts.vue')
     }
   ]
 })

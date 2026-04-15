@@ -48,6 +48,10 @@
           <el-icon><CircleCheck /></el-icon>
           <span>豁免规则</span>
         </el-menu-item>
+        <el-menu-item index="/prompts">
+          <el-icon><EditPen /></el-icon>
+          <span>Prompt 管理</span>
+        </el-menu-item>
       </el-menu>
     </el-aside>
     <el-main class="app-main">

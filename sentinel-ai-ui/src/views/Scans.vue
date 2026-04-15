@@ -26,13 +26,22 @@
       <el-table-column prop="newSqlCount" label="新增" width="80" />
       <el-table-column prop="changedSqlCount" label="变更" width="80" />
       <el-table-column prop="removedSqlCount" label="移除" width="80" />
-      <el-table-column prop="riskSqlCount" label="风险" width="80" />
+      <el-table-column prop="riskSqlCount" width="80">
+        <template #header>
+          <span>风险</span>
+          <el-tooltip content="P0(紧急) / P1(高危) / P2(中危) 等级的 SQL 数量" placement="top">
+            <el-icon style="margin-left: 2px; vertical-align: middle; cursor: help;"><QuestionFilled /></el-icon>
+          </el-tooltip>
+        </template>
+      </el-table-column>
       <el-table-column prop="status" label="状态" width="100">
         <template #default="{ row }">
           <el-tag :type="statusTagType(row.status)" size="small">{{ row.status }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="scanDurationMs" label="耗时(ms)" width="100" />
+      <el-table-column label="耗时" width="100">
+        <template #default="{ row }">{{ formatDuration(row.scanDurationMs) }}</template>
+      </el-table-column>
       <el-table-column label="扫描时间" width="180">
         <template #default="{ row }">{{ formatTime(row.createTime) }}</template>
       </el-table-column>
@@ -56,6 +65,13 @@ import { formatTime } from '../utils/format'
 const batches = ref<any[]>([])
 const page = ref(1)
 const total = ref(0)
+
+const formatDuration = (ms: number | null) => {
+  if (ms == null) return '-'
+  if (ms < 1000) return ms + 'ms'
+  const seconds = (ms / 1000).toFixed(1)
+  return seconds + 's'
+}
 
 const statusTagType = (status: string) => {
   switch (status) {

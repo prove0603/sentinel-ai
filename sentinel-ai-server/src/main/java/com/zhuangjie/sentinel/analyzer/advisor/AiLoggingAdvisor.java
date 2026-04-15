@@ -8,7 +8,12 @@ import org.springframework.ai.chat.client.advisor.api.CallAdvisorChain;
 import org.springframework.ai.chat.model.ChatResponse;
 
 /**
- * Spring AI Advisor that logs each model call with provider name, elapsed time, and token usage.
+ * AI 调用日志 Advisor（Spring AI CallAdvisor）。
+ * <p>
+ * 附加在每个 ChatClient 上，记录每次 AI 调用的：
+ * - provider 名称
+ * - 调用耗时（毫秒）
+ * - token 消耗（promptTokens / completionTokens / totalTokens）
  */
 @Slf4j
 public class AiLoggingAdvisor implements CallAdvisor {

@@ -13,17 +13,16 @@ import org.springframework.stereotype.Component;
 import java.util.*;
 
 /**
- * Extracts all table names referenced in a SQL statement using JSqlParser.
- * Handles SELECT (including JOINs, subqueries), INSERT, UPDATE, DELETE.
+ * SQL 表名提取器。
+ * <p>
+ * 使用 JSqlParser 解析 SQL 语句，提取所有引用的表名（含 JOIN、子查询、DML）。
+ * JSqlParser 解析失败时降级为正则提取。
  */
 @Slf4j
 @Component
 public class TableNameExtractor {
 
-    /**
-     * Extracts all table names from a normalized SQL string.
-     * Returns lowercase table names, excluding placeholder names like "_unknown".
-     */
+    /** 从标准化 SQL 中提取所有表名，返回小写表名集合（排除 _ 开头的占位名） */
     public Set<String> extract(String sql) {
         if (sql == null || sql.isBlank()) {
             return Collections.emptySet();
@@ -102,9 +101,7 @@ public class TableNameExtractor {
         }
     }
 
-    /**
-     * Fallback regex extraction when JSqlParser fails (e.g. pseudo-SQL from QueryWrapper).
-     */
+    /** JSqlParser 解析失败时的降级方案：通过正则提取 FROM/JOIN/INTO/UPDATE 后的表名 */
     private void extractByRegex(String sql, Set<String> tables) {
         String upper = sql.toUpperCase();
         String[] tokens = sql.split("\\s+");

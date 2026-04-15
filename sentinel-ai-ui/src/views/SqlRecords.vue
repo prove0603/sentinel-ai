@@ -114,9 +114,11 @@
           <h4>AI 分析报告</h4>
           <el-descriptions :column="3" border size="small" style="margin-bottom: 12px;">
             <el-descriptions-item label="风险等级">
-              <el-tag :type="riskTagType(analysisResult.analysis?.finalRiskLevel)" size="small">
-                {{ analysisResult.analysis?.finalRiskLevel ?? '-' }}
-              </el-tag>
+              <el-tooltip :content="riskDescription(analysisResult.analysis?.finalRiskLevel)" placement="top">
+                <el-tag :type="riskTagType(analysisResult.analysis?.finalRiskLevel)" size="small">
+                  {{ analysisResult.analysis?.finalRiskLevel ?? '-' }}
+                </el-tag>
+              </el-tooltip>
             </el-descriptions-item>
             <el-descriptions-item label="预估扫描行数">{{ analysisResult.analysis?.aiEstimatedScanRows ?? '-' }}</el-descriptions-item>
             <el-descriptions-item label="预估耗时(ms)">{{ analysisResult.analysis?.aiEstimatedExecTimeMs ?? '-' }}</el-descriptions-item>
@@ -146,9 +148,12 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { sqlRecordApi, projectApi, analysisApi } from '../api'
 import { formatTime } from '../utils/format'
+
+const route = useRoute()
 
 const records = ref<any[]>([])
 const projects = ref<any[]>([])
@@ -241,15 +246,16 @@ const triggerAiAnalysis = async () => {
   }
 }
 
-const riskTagType = (level: string) => {
-  switch (level) {
-    case 'P0': case 'P1': return 'danger'
-    case 'P2': return 'warning'
-    case 'P3': return 'info'
-    case 'P4': return 'success'
-    default: return 'info'
-  }
+const riskLevelMap: Record<string, { type: string; desc: string }> = {
+  P0: { type: 'danger', desc: '紧急 - 必定慢SQL，需立即修复' },
+  P1: { type: 'danger', desc: '高危 - 大概率慢SQL，建议尽快优化' },
+  P2: { type: 'warning', desc: '中危 - 存在性能风险，建议优化' },
+  P3: { type: 'info', desc: '低危 - 轻微风险，可择期优化' },
+  P4: { type: 'success', desc: '安全 - 无明显性能风险' },
 }
+
+const riskTagType = (level: string) => riskLevelMap[level]?.type ?? 'info'
+const riskDescription = (level: string) => riskLevelMap[level]?.desc ?? level
 
 const formatJson = (jsonStr: string | null) => {
   if (!jsonStr) return '暂无'
@@ -271,9 +277,26 @@ const loadProjects = async () => {
   }
 }
 
-onMounted(() => {
+const openRecordById = async (recordId: number) => {
+  try {
+    const res: any = await sqlRecordApi.getById(recordId)
+    if (res.data) {
+      viewDetail(res.data)
+    } else {
+      ElMessage.warning(`SQL 记录 #${recordId} 不存在`)
+    }
+  } catch {
+    ElMessage.error(`获取 SQL 记录 #${recordId} 失败`)
+  }
+}
+
+onMounted(async () => {
   loadProjects()
-  loadData()
+  await loadData()
+  const recordId = route.query.recordId
+  if (recordId) {
+    openRecordById(Number(recordId))
+  }
 })
 </script>
 

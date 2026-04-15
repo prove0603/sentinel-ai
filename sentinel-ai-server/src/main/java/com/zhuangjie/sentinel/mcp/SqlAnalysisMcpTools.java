@@ -20,7 +20,10 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * Sentinel AI MCP Tools — exposes SQL analysis capabilities via MCP protocol.
+ * Sentinel AI MCP 工具集。
+ * <p>
+ * 通过 @Tool 注解暴露 SQL 分析能力，供外部 MCP Client（如 business-qa）通过
+ * Streamable HTTP 协议调用。LLM 可根据用户问题自动选择调用哪个工具。
  */
 @Slf4j
 @Component

@@ -27,7 +27,7 @@ alwaysApply: false
 | 后端框架 | Spring Boot | 3.5.13 |
 | AI Chat | Spring AI ChatClient + OpenAiChatModel（DashScope OpenAI 兼容模式） | 1.1.4 |
 | AI SDK | DashScope SDK（仅 Embedding：TextEmbedding for RAG 向量化） | 2.22.7 |
-| AI 模型 | 多模型轮询：qwen3.5-plus / qwen3-coder-plus / qwen3-max / qwen-plus / qwen-flash / qwen3-max-preview | - |
+| AI 模型 | 多模型轮询：qwen3.5-plus / qwen3-coder-plus / qwen3-max / qwen-plus / qwen-flash / qwen3.6-plus | - |
 | Embedding 模型 | DashScope text-embedding-v3 (1024维) | - |
 | RAG 框架 | Spring AI（也可按需引入 spring-ai-alibaba） | 1.1.4 |
 | MCP Server | Spring AI MCP Server（Streamable HTTP） | 1.1.4 |
@@ -37,6 +37,7 @@ alwaysApply: false
 | Java 源码 AST | JavaParser | 3.26.2 |
 | Git 增量检测 | JGit | 7.1.0 |
 | 缓存 | Caffeine | 3.1.8 |
+| 重试 | spring-retry + spring-boot-starter-aop | - |
 | 工具 | Hutool, Guava | latest |
 | 前端 | Vue 3 + Vite + Element Plus + TypeScript | Vue 3.5, Vite 6 |
 | 数据库 | PostgreSQL 18 + pgvector 0.8.2（统一数据源，业务表 + 向量表） | - |
@@ -69,8 +70,10 @@ sentinel-ai/
 │       │   └── SqlAnalysisMcpTools.java  # @Tool 注解暴露 5 个 SQL 分析工具
 │       ├── common/                  # Result, PageResult 等
 │       ├── controller/              # REST API
+│       │   ├── PromptController.java       # Prompt 模板管理接口
 │       │   ├── ToolController.java         # 工具/测试接口（扫描 wrapper SQL 等）
 │       ├── service/                 # 业务逻辑
+│       │   ├── PromptTemplateService.java   # Prompt 模板管理（CRUD + 按 key 查询）
 │       ├── scanner/                 # SQL 提取引擎 ← P1+P4
 │       │   ├── SqlScanner.java              # 扫描器接口 (scan + scanFiles)
 │       │   ├── MapperXmlScanner.java        # Mapper XML 扫描实现
@@ -104,10 +107,13 @@ sentinel-ai/
 │       │   └── KnowledgeRagService.java   # 知识 CRUD + 向量化嵌入 + 精确匹配 + 语义检索
 │       ├── db/
 │       │   ├── entity/
-│       │   │   └── KnowledgeEntry.java    # 业务知识条目实体 ← P6
+│       │   │   ├── KnowledgeEntry.java    # 业务知识条目实体 ← P6
+│       │   │   └── PromptTemplate.java    # Prompt 模板实体（可配置提示词）
 │       │   ├── mapper/
-│       │   │   └── KnowledgeEntryMapper.java
+│       │   │   ├── KnowledgeEntryMapper.java
+│       │   │   └── PromptTemplateMapper.java
 │       │   └── service/
+│       │       └── PromptTemplateDbService.java
 │       └── pojo/
 │           ├── dto/
 │           ├── vo/
@@ -120,7 +126,9 @@ sentinel-ai/
 │       ├── utils/
 │       │   └── format.ts                   # 统一工具函数（formatTime 等）
 │       └── views/
-│           ├── SqlRecords.vue              # SQL 记录列表（支持筛选 + 详情抽屉内手动触发 AI 分析）
+│           ├── SqlRecords.vue              # SQL 记录列表（支持筛选 + 详情抽屉 + ?recordId= 参数自动打开指定记录）
+│           ├── Analysis.vue               # SQL 分析结果列表（含 SQL 记录 ID 列 + 跳转链接 + 详情抽屉含跳转）
+│           ├── Prompts.vue                 # Prompt 模板管理页面（CRUD + 启停 + 内容编辑）
 │           └── ...
 └── .cursor/rules/
 ```
@@ -242,7 +250,16 @@ sentinel-ai/
 - `ExemptionController` — REST API：CRUD + 状态切换 + 预览（创建前预览受影响 SQL）
 - 前端 `Exemptions.vue` — 规则管理页面（项目下拉选择 + 二次确认 + 预览受影响 SQL 列表）
 
-### AI 集成 — ✅ P2 + P5 + P5.3 + P8.1 + P8.2（Spring AI ChatClient + 多模型轮询 + Advisor）
+### Prompt 模板管理 — ✅ 已实现
+- **架构：** 提示词存储在 `t_prompt_template` 表中，支持在线编辑
+- **加载逻辑：** `AiSqlAnalyzer` 每次分析时从 DB 加载 prompt（通过 `PromptTemplateService.getContent(key)`），找不到则 fallback 到硬编码默认值
+- **模板 key 约定：** `SQL_ANALYSIS_SYSTEM`（系统提示词）、`SQL_ANALYSIS_USER`（用户提示词模板）
+- **用户提示词模板：** 包含 `%s` 占位符（SQL类型、来源位置、SQL文本、DDL上下文、RAG上下文），由 `AiSqlAnalyzer` 动态替换
+- **前端管理页面：** `/prompts`，支持 CRUD、启停、内容编辑（`el-dialog` + monospace 文本域）
+- **初始化数据：** `db/init-prompt-template.sql`（使用 `ON CONFLICT DO NOTHING` 幂等插入）
+- **修改实时生效：** 无需重启服务，下次 AI 分析时自动加载最新模板
+
+### AI 集成 — ✅ P2 + P5 + P5.3 + P8.1 + P8.2（Spring AI ChatClient + 多模型轮询 + Advisor + 重试/熔断）
 - **Chat 调用**：Spring AI `ChatClient` + `OpenAiChatModel`，DashScope OpenAI 兼容模式
   - base-url: `https://dashscope.aliyuncs.com/compatible-mode`（Spring AI 自动追加 `/v1/chat/completions`）
   - 百炼所有 qwen 模型均支持此方式
@@ -253,8 +270,19 @@ sentinel-ai/
   - 记录每次调用的 provider 名称、耗时、prompt/generation/total token 用量
 - **结构化输出**：`BeanOutputConverter<SqlRiskAssessment>` 自动生成 JSON Schema 格式指令并解析 AI 响应为 Java record
 - **Embedding 调用**：DashScope SDK `TextEmbedding` API（RAG 向量化仍用 SDK）
+- **多模型 fallback + 熔断**：`MultiModelChatService` 内置简易熔断机制
+  - 连续失败 3 次后进入 60 秒冷却期（`ProviderHealth` 记录）
+  - round-robin 选模型时跳过冷却中的 provider
+  - 所有 provider 都在冷却中时重置健康状态重试
+- **spring-retry**：`RetryTemplate`（指数退避）用于 AI 调用整体重试
+  - `AiSqlAnalyzer.callWithRetry()` 使用 `retryTemplate.execute()`
+  - 单次失败立即切模型（MultiModelChatService fallback），所有模型都失败后等待退避再重试
+  - `OpenAiChatModel` 内部重试已禁用（注入 `maxAttempts=1` 的 RetryTemplate），避免内部重试导致 fallback 延迟
+- **Prompt 可配置：** 系统/用户提示词从 `t_prompt_template` 表动态加载，fallback 到硬编码默认值
 - **AI 调用策略：** 全量 SQL → 持久化缓存 → Caffeine 内存缓存 → 注入 DDL + RAG 上下文 → MultiModelChatService 轮询调用 → BeanOutputConverter 结构化输出
-- **成本控制：** `max-ai-calls-per-scan` + 持久化缓存（同 SQL 哈希不重复分析）
+- **全量扫描（upsert 模式）：** 按 sqlHash 查找已有 SqlRecord，已存在则更新 lastScanId + sourceFile（不新建），无分析结果才调 AI；扫描结束后将本次未扫到的 SQL 标记为 removed
+- **增量扫描：** 仅扫描 Git diff 涉及的文件，新 SQL 调 AI，已有 SQL 通过 `existsGlobally` 检查跳过
+- **成本控制：** `max-ai-calls-per-scan` + 持久化缓存（同 SQL 哈希不重复分析）+ upsert 避免重复 SqlRecord
 - **自动配置关闭：** `spring.ai.openai.chat.enabled=false` + `spring.ai.chat.client.enabled=false`（所有 ChatClient 手动创建）
 - API Key 通过 `sentinel.ai.api-key` 或环境变量 `AI_DASHSCOPE_API_KEY` 注入
 - 结果写入 `t_sql_analysis` 的 ai_* 字段
@@ -271,6 +299,7 @@ t_scan_batch       -- 扫描批次
 t_sql_analysis     -- 分析结果（通过 sql_record_id 关联 project_id）
 t_exemption_rule   -- 豁免规则（按类名/表名精确匹配，跳过 AI 分析和落库）
 t_knowledge_entry  -- 业务知识条目（P6 RAG）
+t_prompt_template  -- Prompt 模板管理（template_key 唯一，支持在线编辑系统/用户提示词）
 knowledge_vector   -- 向量存储（P6 RAG）— PgVectorStore 自动管理
 ```
 
@@ -285,7 +314,12 @@ knowledge_vector   -- 向量存储（P6 RAG）— PgVectorStore 自动管理
   - `GET /api/analysis/{id}` - 详情（含 projectName）
   - `PUT /api/analysis/{id}/handle` - 修改处理状态（支持 status、note、handler）
   - `POST /api/analysis/reanalyze/{sqlRecordId}` - 手动触发单条 SQL 的 AI 分析（复用扫描同款 prompt + DDL + RAG 上下文）
+- `/api/sql-record/*` - SQL 记录
+  - `GET /api/sql-record/page` - 分页查询，支持 projectId、sqlType、sourceType 筛选
+  - `GET /api/sql-record/{id}` - 按 ID 获取单条 SQL 记录
 - `/api/dashboard/*` - 仪表盘
+  - `GET /api/dashboard/overview` - 概览统计（projectCount、totalSqlCount、riskSqlCount、pendingCount）
+  - pendingCount 定义：handleStatus='ANALYZED' 且 finalRiskLevel IN ('P0','P1')（AI已分析但尚未人工处理的高危 SQL）
 - `/api/table-meta/*` - 表结构元数据管理
   - `POST /api/table-meta/remote-collect` — 远程平台 DDL 全量采集（分批，支持 reAnalyzeChanged 参数）
   - `POST /api/table-meta/refresh-ddl?limit=10` — ✅ P7.1：刷新已有表的 DDL（limit 默认 10，-1 不限）
@@ -304,6 +338,13 @@ knowledge_vector   -- 向量存储（P6 RAG）— PgVectorStore 自动管理
   - `PUT /api/exemption/{id}/toggle` - 切换启用/禁用
   - `POST /api/exemption/preview` - 预览受影响的 SQL 列表（创建前二次确认）
 - `/api/knowledge/*` - 业务知识库管理（CRUD + 重新向量化 + RAG 状态）
+- `/api/prompt/*` - Prompt 模板管理
+  - `GET /api/prompt/list` - 模板列表
+  - `GET /api/prompt/key/{templateKey}` - 按 key 查询
+  - `POST /api/prompt` - 创建模板
+  - `PUT /api/prompt/{id}` - 更新模板
+  - `DELETE /api/prompt/{id}` - 删除模板
+  - `PUT /api/prompt/{id}/toggle` - 切换启用/禁用
 - `/mcp` - MCP Streamable HTTP 端点（供 business-qa MCP Client 连接，提供 SQL 分析工具调用）
 - `/api/tool/*` - 工具/测试接口
   - `POST /api/tool/scan-wrapper` — 扫描单段 Java 代码中的 wrapper SQL
@@ -316,7 +357,7 @@ knowledge_vector   -- 向量存储（P6 RAG）— PgVectorStore 自动管理
 ## 开发约定
 
 - 代码结构：controller → service → db.service → mapper
-- 统一响应：`Result<T>` 和 `PageResult<T>`
+- 统一响应：`Result<T>`（code=200 成功，code!=200 失败）和 `PageResult<T>`。前端判断成功应使用 `res.code === 200`
 - 虚拟线程：`spring.threads.virtual.enabled=true`
 - Java 21 特性：record, sealed interface, pattern matching, 文本块
 - AI 调用缓存：Caffeine (key = sql_hash)
@@ -328,15 +369,23 @@ knowledge_vector   -- 向量存储（P6 RAG）— PgVectorStore 自动管理
   - `sentinel.dev.max-sql-per-scan` — 限制单次扫描处理的 SQL 数量（默认 -1 不限，dev 环境设为 50）
   - `sentinel.ai.max-ai-calls-per-scan` — 限制单次扫描调用 AI 的次数（默认 -1 不限，dev 环境设为 50）
   - 生产环境不设这两个值或设为 -1 即为不限制
-- **AI 分析状态流转：** ANALYZED（AI已分析）→ CONFIRMED / FIXED / IGNORED / FALSE_POSITIVE
+- **AI 分析状态流转：** ANALYZED（AI已分析，初始状态）→ CONFIRMED / FIXED / IGNORED / FALSE_POSITIVE。不存在 PENDING 状态，AI 分析完成即为 ANALYZED
+- **分析结果页面 → SQL 记录跳转：** Analysis.vue 列表新增 SQL 记录 ID 列（可点击跳转），详情抽屉含跳转链接；跳转到 `/sql-records?recordId=xxx`，SqlRecords.vue 自动打开对应详情抽屉
+- **手动触发分析：** `reanalyze` 接口创建 SqlAnalysis 时使用 `record.getLastScanId()` 作为 `scanBatchId`
 - **AI 调用方式：** Spring AI ChatClient + OpenAiChatModel → DashScope OpenAI 兼容模式（`https://dashscope.aliyuncs.com/compatible-mode`）
   - 多模型轮询：`sentinel.ai.providers[]` 配置列表，round-robin + fallback（`MultiModelChatService`）
-  - 默认模型：qwen3.5-plus / qwen3-coder-plus / qwen3-max / qwen-plus / qwen-flash / qwen3-max-preview
+  - 默认模型：qwen3.5-plus / qwen3-coder-plus / qwen3-max / qwen-plus / qwen-flash / qwen3.6-plus
   - API Key 配置：`sentinel.ai.api-key`（全局）或 provider 级别独立配置
   - Advisor：`AiLoggingAdvisor`（`CallAdvisor`）记录每次调用日志（耗时、token 用量）
   - 结构化输出：`BeanOutputConverter<SqlRiskAssessment>` 自动注入 JSON Schema + 解析响应
   - DashScope SDK 仅保留用于 Embedding（RAG 向量化）
   - Spring AI 自动配置已关闭：`spring.ai.openai.chat.enabled=false`，所有 Bean 手动创建
+  - **重试与 fallback 架构：**
+    - `OpenAiChatModel` 内部重试已禁用（注入 `maxAttempts=1` 的 RetryTemplate）
+    - `MultiModelChatService`：单次调用失败立即 fallback 到下一个模型 + 简易熔断（连续 3 次失败进入 60s 冷却）
+    - `AiSqlAnalyzer`：`RetryTemplate` 指数退避重试（所有模型都失败后整体重试）
+    - 两层配合：单次失败切模型 → 所有模型失败等退避再来一轮
+  - **Prompt 可配置：** 系统/用户提示词从 `t_prompt_template` 表动态加载，修改后下次分析即生效
 - **分析详情 API：** `/api/analysis/{id}` 返回 `AnalysisDetailVo`，包含原 SQL、来源文件、项目名、表结构 DDL 上下文
 - **分析列表筛选：** 支持按项目、风险等级、处理状态、分析时间范围筛选，默认按分析时间逆序
 - **MCP Server：** 通过 `spring-ai-starter-mcp-server-webmvc` 暴露 Streamable HTTP 端点（`/mcp`），供 business-qa 等 Client 调用
@@ -504,6 +553,20 @@ table-meta/
   - ✅ 后端 `AnalysisService.analyzeByRecordId()` — 根据 SqlRecord ID 构造 ScannedSql，复用 AiSqlAnalyzer（DDL + RAG 上下文 + MultiModelChatService 轮询）
   - ✅ 后端 `POST /api/analysis/reanalyze/{sqlRecordId}` — 手动触发单条 SQL 的 AI 分析，返回 AnalysisDetailVo
   - ✅ 前端 SqlRecords.vue 详情抽屉新增「触发 AI 分析」按钮，分析完成后就地展示风险等级、分析报告、索引建议、重写建议
+- **P8.4：** spring-retry + 多模型 fallback 增强 ← **✅ 已完成**
+  - ✅ 引入 `spring-retry` + `spring-boot-starter-aop` 依赖
+  - ✅ `AiConfig` 新增 `RetryTemplate` Bean（指数退避策略，可配置 max-retries/initial-interval/multiplier/max-interval）
+  - ✅ `AiConfig.createNamedClient()` 注入 `maxAttempts=1` 的 RetryTemplate 到 OpenAiChatModel，禁用其内部重试
+  - ✅ `MultiModelChatService` 增加 `ProviderHealth` 熔断机制（连续失败阈值 + 冷却时间）
+  - ✅ `AiSqlAnalyzer.callWithRetry()` 替换为 `retryTemplate.execute()`（Spring Retry 管理重试）
+- **P8.5：** Prompt 可配置化 ← **✅ 已完成**
+  - ✅ `t_prompt_template` 表 — 存储可配置的系统/用户提示词模板
+  - ✅ `PromptTemplateService` — CRUD + 按 templateKey 查询（启用状态过滤）
+  - ✅ `PromptController` — REST API（CRUD + 启停 + 按 key 查询）
+  - ✅ `AiSqlAnalyzer` 改为从 DB 动态加载 prompt（`getContent(KEY_SYSTEM_PROMPT)` / `getContent(KEY_USER_PROMPT)`），fallback 到硬编码默认值
+  - ✅ 前端 `Prompts.vue` — 模板管理页面（表格 + 编辑弹窗 + 启停开关）
+  - ✅ 初始化 SQL 脚本：`db/init-prompt-template.sql`
+  - ✅ 侧边栏新增「Prompt 管理」入口
 - **P9：** 完善 Dashboard、通知、导出报告、开源准备
 
 ---
@@ -516,6 +579,7 @@ table-meta/
 - **前端开发端口：** 5173（`npm run dev` in sentinel-ai-ui）
 - **PostgreSQL：** `localhost:5432/sentinel_ai`（本地安装 PG18 + pgvector 0.8.2）
 - **建表脚本：** `src/main/resources/db/schema-pg.sql`（首次需手动执行）
+- **初始化数据：** `src/main/resources/db/init-prompt-template.sql`（Prompt 模板初始数据，幂等执行）
 - **表结构 DDL 目录：** `table-meta/`（扁平目录，可通过远程数据平台采集或手动维护）
 - **launch.json：** 含 JVM UTF-8 参数 + `integratedTerminal` console 模式 + API Key 环境变量
 - **settings.json：** 终端自动 `chcp 65001`（UTF-8）+ java.debug.settings.vmArgs
@@ -528,6 +592,7 @@ table-meta/
 - GroupId 使用 `com.zhuangjie`，不要使用 `com.al.risk`（开源合规）
 - 项目名 sentinel-ai，不包含公司相关标识
 - 代码和注释中不涉及公司内部信息
+- **编码规范：** 参见 `.cursor/rules/coding-style.mdc`（中文注释、核心逻辑注释、测试代码标注等）
 - 新对话框中可用 `@sentinel-ai-project` 引用此规则文件获取完整项目上下文
 - **AI SDK 演进历程：** spring-ai-alibaba → dashscope-sdk-java → OpenAI 兼容 HTTP → Spring AI ChatClient
   - Chat：Spring AI `ChatClient` + `OpenAiChatModel`（DashScope OpenAI 兼容模式），多模型轮询 + Advisor 日志

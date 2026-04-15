@@ -14,10 +14,11 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * Collects DDL and index statistics from production database via remote data platform APIs.
+ * 远程 DDL 采集器（可选组件）。
  * <p>
- * This component is optional — when the data platform is not configured,
- * users can manually maintain DDL files in the table-meta directory.
+ * 通过远程数据平台 API 从生产环境采集表结构 DDL 和索引统计信息。
+ * 未配置数据平台时不加载（{@code @ConditionalOnProperty}），
+ * 用户可手动维护 table-meta 目录下的 DDL 文件。
  */
 @Slf4j
 @Service
@@ -38,11 +39,9 @@ public class RemoteDdlCollector {
     }
 
     /**
-     * Refreshes DDL for tables that already have files in table-meta/.
-     * Only queries tables that already exist locally — does NOT discover new tables.
+     * 刷新已有表的 DDL。仅更新 table-meta 目录中已有文件的表，不会发现新表。
      *
-     * @param limit max number of tables to process, -1 for no limit
-     * @return refresh result
+     * @param limit 最大处理表数，-1 不限
      */
     public RefreshResult refreshDdl(int limit) throws IOException, InterruptedException {
         List<String> localTables = listLocalTables();
@@ -121,12 +120,10 @@ public class RemoteDdlCollector {
     }
 
     /**
-     * Refreshes index statistics for tables that already have files in table-meta/.
-     * Queries INFORMATION_SCHEMA.STATISTICS for each table and appends/updates
-     * an index statistics section at the bottom of the .sql file.
+     * 刷新已有表的索引统计信息。
+     * 查询 INFORMATION_SCHEMA.STATISTICS，将索引区分度/基数/选择性追加到 DDL 文件末尾。
      *
-     * @param limit max number of tables to process, -1 for no limit
-     * @return refresh result
+     * @param limit 最大处理表数，-1 不限
      */
     public RefreshResult refreshIndexStats(int limit) throws IOException, InterruptedException {
         List<String> localTables = listLocalTables();
@@ -199,9 +196,7 @@ public class RemoteDdlCollector {
         return new RefreshResult(tablesToProcess.size(), success, failed, updated, updatedTables);
     }
 
-    /**
-     * Collects DDL for all tables (full collection from scratch).
-     */
+    /** 全量采集所有表的 DDL（从零开始） */
     public CollectionResult collectAll() throws IOException, InterruptedException {
         Path outputDir = Path.of(tableMetaDir);
         Files.createDirectories(outputDir);
@@ -433,9 +428,7 @@ public class RemoteDdlCollector {
         return result;
     }
 
-    /**
-     * Detects DDL changes by comparing local table-meta files with current production DDL.
-     */
+    /** 检测 DDL 变更：对比本地 table-meta 文件与当前线上 DDL 的差异 */
     public DiffResult detectChanges() throws IOException, InterruptedException {
         Path metaDir = Path.of(tableMetaDir);
         if (!Files.isDirectory(metaDir)) {

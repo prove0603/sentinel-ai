@@ -17,10 +17,17 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * Business knowledge RAG service:
- * - CRUD for knowledge entries (stored in H2)
- * - Embed & store in PGVector for semantic retrieval
- * - Retrieve relevant knowledge for AI SQL analysis
+ * 业务知识 RAG 服务。
+ * <p>
+ * 核心职责：
+ * - 知识条目 CRUD（存储在 PostgreSQL t_knowledge_entry 表）
+ * - 知识向量化：创建/更新时自动将内容通过 Embedding 模型转为向量，存入 PgVectorStore
+ * - 语义检索：AI 分析 SQL 前，通过精确匹配 + 向量相似度检索相关业务知识，注入 prompt
+ * <p>
+ * 双重检索策略：
+ * 1. 精确匹配：按 SQL 涉及的表名匹配知识条目的 relatedTables 字段
+ * 2. 语义检索：SQL 文本 → Embedding → PGVector 相似度搜索 Top-3
+ * 两种结果合并去重后拼成 RAG 上下文注入 AI Prompt
  */
 @Slf4j
 @Service
@@ -98,8 +105,9 @@ public class KnowledgeRagService {
                         .orderByDesc(KnowledgeEntry::getCreateTime));
     }
 
-    // ==================== Embedding ====================
+    // ==================== 向量化（Embedding） ====================
 
+    /** 将知识条目内容向量化后存入 PgVectorStore */
     public void embedEntry(KnowledgeEntry entry) {
         if (vectorStore == null) {
             log.debug("VectorStore unavailable, skipping embed for entry {}", entry.getId());
@@ -129,9 +137,7 @@ public class KnowledgeRagService {
         }
     }
 
-    /**
-     * Re-embed all non-embedded or all entries.
-     */
+    /** 重新向量化：forceAll=true 时重新向量化所有条目，否则只处理未向量化的 */
     public int reEmbedAll(boolean forceAll) {
         if (vectorStore == null) return 0;
 
@@ -154,13 +160,11 @@ public class KnowledgeRagService {
         return count;
     }
 
-    // ==================== Semantic Retrieval ====================
+    // ==================== 语义检索 ====================
 
     /**
-     * Retrieves relevant business knowledge for a SQL statement.
-     * Combines:
-     * 1. Precise matching by table names
-     * 2. Semantic search via vector similarity
+     * 为指定 SQL 检索相关的业务知识上下文。
+     * 合并两种检索结果：精确匹配（按表名）+ 语义检索（向量相似度），去重后返回。
      */
     public String retrieveContext(String sqlText, Set<String> tableNames) {
         List<String> contextParts = new ArrayList<>();

@@ -109,7 +109,7 @@ const testConnection = async () => {
   connectionStatus.value = null
   try {
     const res: any = await tableMetaApi.connectionTest()
-    if (res.code === 0) {
+    if (res.code === 200) {
       connectionStatus.value = {
         type: 'success',
         message: `连接成功，数据库共 ${res.data.tableCount} 张表`
@@ -135,7 +135,7 @@ const confirmRefreshDdl = async () => {
     lastResult.value = null
     ElMessage.info('正在刷新 DDL，请耐心等待...')
     const res: any = await tableMetaApi.refreshDdl()
-    if (res.code === 0) {
+    if (res.code === 200) {
       lastResult.value = {
         title: '刷新 DDL 结果',
         success: true,
@@ -170,7 +170,7 @@ const confirmRefreshIndex = async () => {
     lastResult.value = null
     ElMessage.info('正在刷新索引统计，请耐心等待...')
     const res: any = await tableMetaApi.refreshIndexStats()
-    if (res.code === 0) {
+    if (res.code === 200) {
       lastResult.value = {
         title: '刷新索引统计结果',
         success: true,

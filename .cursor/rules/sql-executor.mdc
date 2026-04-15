@@ -1,6 +1,7 @@
 ---
 description: PostgreSQL SQL 执行规则 — 适用于 business-qa 和 sentinel-ai 项目
-alwaysApply: true
+globs: "**/sentinel-ai/**"
+alwaysApply: false
 ---
 
 # PostgreSQL SQL 执行规则

@@ -152,6 +152,7 @@ public class AnalysisService {
         SqlRiskAssessment ai = aiDetail.assessment();
         SqlAnalysis analysis = new SqlAnalysis();
         analysis.setSqlRecordId(record.getId());
+        analysis.setScanBatchId(record.getLastScanId());
         analysis.setAiRiskLevel(ai.riskLevel());
         analysis.setAiAnalysis(ai.explanation());
         analysis.setAiIndexSuggestion(JSONUtil.toJsonStr(ai.indexSuggestions()));

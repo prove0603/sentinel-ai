@@ -68,7 +68,7 @@
             <el-option
               v-for="p in projects"
               :key="p.id"
-              :label="p.name"
+              :label="p.projectName"
               :value="p.id"
             />
           </el-select>
@@ -144,7 +144,7 @@ function ruleTypeLabel(type: string) {
 
 function projectName(id: number) {
   const p = projects.value.find((x: any) => x.id === id)
-  return p ? p.name : `#${id}`
+  return p ? p.projectName : `#${id}`
 }
 
 async function loadProjects() {

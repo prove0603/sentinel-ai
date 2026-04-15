@@ -16,6 +16,15 @@ public class SqlRecordController {
 
     private final SqlRecordDbService sqlRecordDbService;
 
+    @GetMapping("/{id}")
+    public Result<SqlRecord> getById(@PathVariable Long id) {
+        SqlRecord record = sqlRecordDbService.getById(id);
+        if (record == null) {
+            return Result.fail("SQL 记录不存在: " + id);
+        }
+        return Result.ok(record);
+    }
+
     @GetMapping("/page")
     public Result<PageResult<SqlRecord>> page(
             @RequestParam(required = false) Long projectId,

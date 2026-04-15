@@ -50,11 +50,21 @@
 
     <el-table :data="records" stripe>
       <el-table-column prop="id" label="ID" width="80" />
+      <el-table-column prop="sqlRecordId" label="SQL记录" width="100">
+        <template #default="{ row }">
+          <el-link v-if="row.sqlRecordId" type="primary" :underline="false" @click="goToSqlRecord(row.sqlRecordId)">
+            #{{ row.sqlRecordId }}
+          </el-link>
+          <span v-else>-</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="finalRiskLevel" label="风险等级" width="100">
         <template #default="{ row }">
-          <el-tag :type="riskTagType(row.finalRiskLevel)" size="small">
-            {{ row.finalRiskLevel }}
-          </el-tag>
+          <el-tooltip :content="riskDescription(row.finalRiskLevel)" placement="top">
+            <el-tag :type="riskTagType(row.finalRiskLevel)" size="small">
+              {{ row.finalRiskLevel }}
+            </el-tag>
+          </el-tooltip>
         </template>
       </el-table-column>
       <el-table-column prop="aiRiskLevel" label="AI 判定" width="100" />
@@ -65,7 +75,7 @@
           <el-tag :type="statusTagType(row.handleStatus)" size="small">{{ statusLabel(row.handleStatus) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column label="分析时间" width="180" sortable>
+      <el-table-column label="分析时间" min-width="180" sortable>
         <template #default="{ row }">{{ formatTime(row.createTime) }}</template>
       </el-table-column>
       <el-table-column label="操作" width="100">
@@ -118,6 +128,16 @@
           </el-descriptions-item>
           <el-descriptions-item label="SQL 类型">{{ currentDetail.sqlType ?? '-' }}</el-descriptions-item>
           <el-descriptions-item label="来源类型">{{ currentDetail.sourceType ?? '-' }}</el-descriptions-item>
+          <el-descriptions-item label="SQL 记录">
+            <el-link
+              v-if="currentDetail.analysis?.sqlRecordId"
+              type="primary"
+              @click="goToSqlRecord(currentDetail.analysis.sqlRecordId)"
+            >
+              #{{ currentDetail.analysis.sqlRecordId }} — 查看详情
+            </el-link>
+            <span v-else>-</span>
+          </el-descriptions-item>
         </el-descriptions>
 
         <h4>原始 SQL</h4>
@@ -169,9 +189,12 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import { analysisApi, projectApi } from '../api'
 import { formatTime } from '../utils/format'
+
+const router = useRouter()
 
 const records = ref<any[]>([])
 const projects = ref<any[]>([])
@@ -232,16 +255,16 @@ const timeShortcuts = [
   }
 ]
 
-const riskTagType = (level: string) => {
-  switch (level) {
-    case 'P0': return 'danger'
-    case 'P1': return 'danger'
-    case 'P2': return 'warning'
-    case 'P3': return 'info'
-    case 'P4': return 'success'
-    default: return 'info'
-  }
+const riskLevelMap: Record<string, { type: string; desc: string }> = {
+  P0: { type: 'danger', desc: '紧急 - 必定慢SQL，需立即修复' },
+  P1: { type: 'danger', desc: '高危 - 大概率慢SQL，建议尽快优化' },
+  P2: { type: 'warning', desc: '中危 - 存在性能风险，建议优化' },
+  P3: { type: 'info', desc: '低危 - 轻微风险，可择期优化' },
+  P4: { type: 'success', desc: '安全 - 无明显性能风险' },
 }
+
+const riskTagType = (level: string) => riskLevelMap[level]?.type ?? 'info'
+const riskDescription = (level: string) => riskLevelMap[level]?.desc ?? level
 
 const statusTagType = (status: string) => {
   switch (status) {
@@ -342,6 +365,10 @@ const confirmStatusChange = async () => {
   } catch {
     ElMessage.error('状态更新失败')
   }
+}
+
+const goToSqlRecord = (recordId: number) => {
+  router.push({ name: 'SqlRecords', query: { recordId: String(recordId) } })
 }
 
 onMounted(() => {

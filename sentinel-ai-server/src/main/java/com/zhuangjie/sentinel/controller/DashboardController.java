@@ -46,7 +46,7 @@ public class DashboardController {
 
         data.put("pendingCount", sqlAnalysisDbService.count(
                 new LambdaQueryWrapper<SqlAnalysis>()
-                        .eq(SqlAnalysis::getHandleStatus, "PENDING")
+                        .eq(SqlAnalysis::getHandleStatus, "ANALYZED")
                         .in(SqlAnalysis::getFinalRiskLevel, "P0", "P1")));
 
         return Result.ok(data);

@@ -69,6 +69,7 @@ export const gitApi = {
 
 export const sqlRecordApi = {
   page: (params: any) => api.get('/sql-record/page', { params }),
+  getById: (id: number) => api.get(`/sql-record/${id}`),
 }
 
 export const exemptionApi = {
@@ -78,6 +79,15 @@ export const exemptionApi = {
   delete: (id: number) => api.delete(`/exemption/${id}`),
   toggle: (id: number) => api.put(`/exemption/${id}/toggle`),
   preview: (data: any, params?: any) => api.post('/exemption/preview', data, { params }),
+}
+
+export const promptApi = {
+  list: () => api.get('/prompt/list'),
+  getByKey: (key: string) => api.get(`/prompt/key/${key}`),
+  create: (data: any) => api.post('/prompt', data),
+  update: (id: number, data: any) => api.put(`/prompt/${id}`, data),
+  delete: (id: number) => api.delete(`/prompt/${id}`),
+  toggle: (id: number) => api.put(`/prompt/${id}/toggle`),
 }
 
 export const knowledgeApi = {

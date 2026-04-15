@@ -115,6 +115,17 @@ CREATE TABLE IF NOT EXISTS t_exemption_rule (
     update_time     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS t_prompt_template (
+    id              BIGSERIAL PRIMARY KEY,
+    template_key    VARCHAR(50) NOT NULL UNIQUE,
+    template_name   VARCHAR(100) NOT NULL,
+    content         TEXT NOT NULL,
+    description     VARCHAR(500),
+    status          SMALLINT DEFAULT 1,
+    create_time     TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    update_time     TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS t_knowledge_entry (
     id              BIGSERIAL PRIMARY KEY,
     knowledge_type  VARCHAR(30) NOT NULL,

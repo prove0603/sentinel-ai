@@ -16,6 +16,8 @@ import com.zhuangjie.sentinel.delta.DeltaResult;
 import com.zhuangjie.sentinel.delta.GitDeltaDetector;
 import com.zhuangjie.sentinel.delta.GitRepoManager;
 import com.zhuangjie.sentinel.delta.SqlHashComparator;
+import com.zhuangjie.sentinel.notification.UserMappingService;
+import com.zhuangjie.sentinel.notification.WeComNotificationService;
 import com.zhuangjie.sentinel.pojo.dto.ScannedSql;
 import com.zhuangjie.sentinel.pojo.dto.SqlRiskAssessment;
 import com.zhuangjie.sentinel.pojo.enums.ScanType;
@@ -26,6 +28,7 @@ import com.zhuangjie.sentinel.scanner.SqlNormalizer;
 import cn.hutool.json.JSONUtil;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.scheduling.annotation.Async;
 import org.springframework.stereotype.Service;
@@ -35,8 +38,10 @@ import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -56,6 +61,10 @@ public class ScanService {
     private final GitRepoManager gitRepoManager;
     private final SqlHashComparator sqlHashComparator;
     private final ExemptionService exemptionService;
+    private final UserMappingService userMappingService;
+
+    @Autowired(required = false)
+    private WeComNotificationService weComNotificationService;
 
     @Value("${sentinel.ai.max-ai-calls-per-scan:-1}")
     private int maxAiCallsPerScan;
@@ -79,6 +88,7 @@ public class ScanService {
         }
 
         String headCommit = gitDeltaDetector.resolveHead(projectRoot);
+        String gitAuthor = gitDeltaDetector.resolveHeadAuthor(projectRoot);
 
         boolean isFullScan = forceFullScan
                 || project.getLastScanCommit() == null
@@ -122,6 +132,10 @@ public class ScanService {
             scanBatchDbService.updateById(batch);
         }
 
+        if (weComNotificationService != null) {
+            weComNotificationService.sendScanNotification(batch, project.getProjectName(), gitAuthor);
+        }
+
         return CompletableFuture.completedFuture(batch);
     }
 
@@ -138,6 +152,8 @@ public class ScanService {
      */
     private void doFullScan(ScanBatch batch, ProjectConfig project, Path projectRoot) {
         List<ScannedSql> scannedSqls = scanAllSources(projectRoot);
+
+        Map<String, String> fileOwnerMap = resolveFileOwners(projectRoot, scannedSqls);
 
         int newCount = 0;
         int riskCount = 0;
@@ -175,6 +191,7 @@ public class ScanService {
                 existing.setLastScanId(batch.getId());
                 existing.setSourceFile(scannedSql.sourceFile());
                 existing.setSourceLocation(scannedSql.sourceLocation());
+                existing.setOwner(fileOwnerMap.getOrDefault(scannedSql.sourceFile(), userMappingService.getDefaultOwner()));
                 existing.setUpdateTime(LocalDateTime.now());
                 sqlRecordDbService.updateById(existing);
 
@@ -198,7 +215,8 @@ public class ScanService {
                     }
                 }
             } else {
-                SqlRecord record = saveSqlRecord(scannedSql, sqlHash, project.getId(), batch.getId());
+                String owner = fileOwnerMap.getOrDefault(scannedSql.sourceFile(), userMappingService.getDefaultOwner());
+                SqlRecord record = saveSqlRecord(scannedSql, sqlHash, project.getId(), batch.getId(), owner);
                 newCount++;
 
                 if (shouldInvokeAi(aiAnalyzedCount)) {
@@ -262,8 +280,9 @@ public class ScanService {
                     .map(projectRoot::resolve)
                     .toList();
             List<ScannedSql> xmlSqls = mapperXmlScanner.scanFiles(projectRoot, xmlAbsolutePaths);
+            Map<String, String> xmlOwnerMap = resolveFileOwners(projectRoot, xmlSqls);
             IncrementalProcessResult xmlResult = processIncrementalSqls(
-                    xmlSqls, changedXmlFiles, project, batch, aiAnalyzedCount);
+                    xmlSqls, changedXmlFiles, project, batch, aiAnalyzedCount, xmlOwnerMap);
             newCount += xmlResult.newCount;
             removedCount += xmlResult.removedCount;
             riskCount += xmlResult.riskCount;
@@ -281,8 +300,9 @@ public class ScanService {
             javaSqls.addAll(queryWrapperScanner.scanFiles(projectRoot, javaAbsolutePaths));
 
             if (!javaSqls.isEmpty()) {
+                Map<String, String> javaOwnerMap = resolveFileOwners(projectRoot, javaSqls);
                 IncrementalProcessResult javaResult = processIncrementalSqls(
-                        javaSqls, changedJavaFiles, project, batch, aiAnalyzedCount);
+                        javaSqls, changedJavaFiles, project, batch, aiAnalyzedCount, javaOwnerMap);
                 newCount += javaResult.newCount;
                 removedCount += javaResult.removedCount;
                 riskCount += javaResult.riskCount;
@@ -322,7 +342,8 @@ public class ScanService {
 
     private IncrementalProcessResult processIncrementalSqls(
             List<ScannedSql> currentSqls, List<String> changedFiles,
-            ProjectConfig project, ScanBatch batch, int baseAiAnalyzedCount) {
+            ProjectConfig project, ScanBatch batch, int baseAiAnalyzedCount,
+            Map<String, String> fileOwnerMap) {
 
         List<SqlRecord> existingRecords = sqlRecordDbService.list(
                 new LambdaQueryWrapper<SqlRecord>()
@@ -370,7 +391,8 @@ public class ScanService {
                 continue;
             }
 
-            SqlRecord record = saveSqlRecord(newSql, sqlHash, project.getId(), batch.getId());
+            String owner = fileOwnerMap.getOrDefault(newSql.sourceFile(), userMappingService.getDefaultOwner());
+            SqlRecord record = saveSqlRecord(newSql, sqlHash, project.getId(), batch.getId(), owner);
             newCount++;
 
             SqlAnalysis reused = reuseExistingAnalysis(sqlHash, record.getId(), batch.getId());
@@ -556,8 +578,27 @@ public class ScanService {
                         .eq(SqlRecord::getStatus, 1));
     }
 
+    /**
+     * 批量解析 SQL 来源文件的负责人。
+     * Git 用户名 → 企业微信 userId，找不到映射则使用默认负责人。
+     */
+    private Map<String, String> resolveFileOwners(Path projectRoot, List<ScannedSql> sqls) {
+        List<String> uniqueFiles = sqls.stream()
+                .map(ScannedSql::sourceFile)
+                .distinct()
+                .collect(Collectors.toList());
+
+        Map<String, String> gitAuthors = gitDeltaDetector.resolveFileAuthors(projectRoot, uniqueFiles);
+
+        return uniqueFiles.stream().collect(Collectors.toMap(
+                f -> f,
+                f -> userMappingService.resolveOwner(gitAuthors.get(f)),
+                (a, b) -> a
+        ));
+    }
+
     private SqlRecord saveSqlRecord(ScannedSql scannedSql, String sqlHash,
-                                     Long projectId, Long batchId) {
+                                     Long projectId, Long batchId, String owner) {
         SqlRecord record = new SqlRecord();
         record.setProjectId(projectId);
         record.setSqlHash(sqlHash);
@@ -567,6 +608,7 @@ public class ScanService {
         record.setSourceType(scannedSql.sourceType().getCode());
         record.setSourceFile(scannedSql.sourceFile());
         record.setSourceLocation(scannedSql.sourceLocation());
+        record.setOwner(owner);
         record.setFirstScanId(batchId);
         record.setLastScanId(batchId);
         record.setStatus(1);
@@ -595,6 +637,78 @@ public class ScanService {
         analysis.setCreateTime(LocalDateTime.now());
         sqlAnalysisDbService.save(analysis);
         return analysis;
+    }
+
+    /**
+     * 工具方法：为指定项目中 owner 为空的活跃 SqlRecord 补充负责人。
+     * 通过 Git log 获取文件最新提交人，再映射到系统 owner。
+     *
+     * @return 更新的记录数
+     */
+    public int fillMissingOwners(Long projectId) {
+        ProjectConfig project = projectService.getById(projectId);
+        if (project == null) {
+            throw new IllegalArgumentException("Project not found: " + projectId);
+        }
+
+        Path projectRoot;
+        try {
+            projectRoot = gitRepoManager.syncRepo(project);
+        } catch (Exception e) {
+            throw new RuntimeException("Git sync failed: " + e.getMessage(), e);
+        }
+
+        List<SqlRecord> records = sqlRecordDbService.list(
+                new LambdaQueryWrapper<SqlRecord>()
+                        .eq(SqlRecord::getProjectId, projectId)
+                        .eq(SqlRecord::getStatus, 1)
+                        .and(w -> w.isNull(SqlRecord::getOwner).or().eq(SqlRecord::getOwner, "")));
+
+        if (records.isEmpty()) {
+            log.info("fillMissingOwners: no records need owner for project {}", projectId);
+            return 0;
+        }
+
+        List<String> uniqueFiles = records.stream()
+                .map(SqlRecord::getSourceFile)
+                .distinct()
+                .collect(Collectors.toList());
+
+        Map<String, String> gitAuthors = gitDeltaDetector.resolveFileAuthors(projectRoot, uniqueFiles);
+        Map<String, String> fileOwnerMap = uniqueFiles.stream().collect(Collectors.toMap(
+                f -> f,
+                f -> userMappingService.resolveOwner(gitAuthors.get(f)),
+                (a, b) -> a
+        ));
+
+        int updated = 0;
+        for (SqlRecord record : records) {
+            String owner = fileOwnerMap.getOrDefault(record.getSourceFile(), userMappingService.getDefaultOwner());
+            record.setOwner(owner);
+            record.setUpdateTime(LocalDateTime.now());
+            sqlRecordDbService.updateById(record);
+            updated++;
+        }
+
+        log.info("fillMissingOwners: updated {} records for project {}", updated, projectId);
+        return updated;
+    }
+
+    /**
+     * 工具方法：为所有项目补充 owner。
+     */
+    public int fillAllMissingOwners() {
+        List<ProjectConfig> projects = projectConfigDbService.list(
+                new LambdaQueryWrapper<ProjectConfig>().eq(ProjectConfig::getStatus, 1));
+        int total = 0;
+        for (ProjectConfig project : projects) {
+            try {
+                total += fillMissingOwners(project.getId());
+            } catch (Exception e) {
+                log.warn("fillMissingOwners failed for project {}: {}", project.getProjectName(), e.getMessage());
+            }
+        }
+        return total;
     }
 
     private static String abbrev(String hash) {

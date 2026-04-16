@@ -36,3 +36,17 @@ alwaysApply: true
 - Element Plus 组件库，中文 locale
 - API 层统一封装在 `src/api/index.ts`
 - 时间格式化统一使用 `utils/format.ts`
+
+## 新增文件 gitignore 检查清单
+
+新增脚本或配置文件时，必须评估是否需要加入 `.gitignore`。以下类型**必须忽略**：
+
+| 类型 | 示例 |
+|---|---|
+| 含 API Key / 密码 / Token | `application-dev.yml`、`.env`、`wecom-user-mapping.yml` |
+| 含本机 IP / 内部域名 / 部署路径 | `deploy.ps1`、`deploy.sh` |
+| 含公司内部信息（组织架构、人员等） | 人员映射文件 |
+| IDE 个人配置 | `.vscode/launch.json`、`.cursor/mcp.json` |
+| 运行时产物 | `*.log`、`app.log`、`app-error.log` |
+
+**操作流程**：新建此类文件后，立即在 `.gitignore` 中添加对应条目，提交前用 `git status` 确认不会被跟踪。

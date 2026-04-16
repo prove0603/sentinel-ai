@@ -92,6 +92,7 @@ public class AnalysisService {
             vo.setSourceType(record.getSourceType());
             vo.setSourceFile(record.getSourceFile());
             vo.setSourceLocation(record.getSourceLocation());
+            vo.setOwner(record.getOwner());
 
             ProjectConfig project = projectService.getById(record.getProjectId());
             if (project != null) {

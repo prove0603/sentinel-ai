@@ -1,5 +1,6 @@
 package com.zhuangjie.sentinel.knowledge;
 
+import com.zhuangjie.sentinel.db.entity.TableMeta;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
@@ -15,11 +16,8 @@ import java.util.regex.Pattern;
 /**
  * DDL 表结构上下文构建器。
  * <p>
- * 从磁盘读取 DDL 文件，为 AI 分析 prompt 构建表结构上下文。
- * 目录结构：{@code {table-meta-dir}/{table_name}.sql}（扁平目录，每张表一个文件）
- * <p>
- * DDL 文件格式：{@code -- Estimated Rows: N} 头部注释 + SHOW CREATE TABLE 输出。
- * 支持分表智能匹配：如 t_log_202603 会自动匹配 t_log.sql。
+ * 优先从 {@link TableMetaCacheService} 内存缓存获取表结构；
+ * 缓存未命中时降级到磁盘 DDL 文件，保证向后兼容。
  */
 @Slf4j
 @Component
@@ -28,28 +26,31 @@ public class KnowledgeContextBuilder {
     private static final Pattern ESTIMATED_ROWS_PATTERN =
             Pattern.compile("--\\s*Estimated Rows:\\s*(\\d+)", Pattern.CASE_INSENSITIVE);
 
-    /** Matches sharded table suffixes: _202301, _2023, _20230101, _1, _2 etc. */
     private static final Pattern SHARD_SUFFIX_PATTERN =
             Pattern.compile("^(.+?)(_\\d{4,}|_\\d{1,2})$");
 
     private final TableNameExtractor tableNameExtractor;
+    private final TableMetaCacheService cacheService;
     private final Path tableMetaDir;
 
     public KnowledgeContextBuilder(
             TableNameExtractor tableNameExtractor,
+            TableMetaCacheService cacheService,
             @Value("${sentinel.knowledge.table-meta-dir:table-meta}") String tableMetaDirStr) {
         this.tableNameExtractor = tableNameExtractor;
+        this.cacheService = cacheService;
         this.tableMetaDir = Path.of(tableMetaDirStr);
-        log.info("Knowledge context builder initialized, table-meta-dir: {}", tableMetaDir.toAbsolutePath());
+        log.info("KnowledgeContextBuilder initialized, table-meta-dir: {}, cache: {} tables",
+                tableMetaDir.toAbsolutePath(), cacheService.size());
     }
 
     public boolean isAvailable() {
-        return Files.isDirectory(tableMetaDir);
+        return cacheService.size() > 0 || Files.isDirectory(tableMetaDir);
     }
 
     /**
-     * 根据 SQL 中引用的表名，从 DDL 文件读取表结构，构建 AI prompt 上下文。
-     * 流程：提取表名 → 查找 DDL 文件（含分表匹配） → 读取内容 → 格式化为上下文字符串。
+     * 根据 SQL 中引用的表名构建 AI prompt 上下文。
+     * 流程：提取表名 → 缓存查找（降级文件） → 格式化为上下文字符串。
      */
     public String buildContext(String sql) {
         Set<String> tableNames = tableNameExtractor.extract(sql);
@@ -57,44 +58,77 @@ public class KnowledgeContextBuilder {
             return "";
         }
 
-        if (!Files.isDirectory(tableMetaDir)) {
-            log.debug("table-meta directory does not exist: {}", tableMetaDir);
-            return "";
-        }
-
         Set<String> resolvedBaseNames = new HashSet<>();
         List<TableFileContent> matched = new ArrayList<>();
+
         for (String tableName : tableNames) {
-            Path ddlFile = resolveDdlFile(tableMetaDir, tableName);
-            if (ddlFile == null) continue;
-
-            String baseName = ddlFile.getFileName().toString().replace(".sql", "");
-            if (!resolvedBaseNames.add(baseName)) continue;
-
-            try {
-                String content = Files.readString(ddlFile, StandardCharsets.UTF_8);
-                long estimatedRows = extractEstimatedRows(content);
-                boolean isSharded = !baseName.equalsIgnoreCase(tableName);
-                String displayName = isSharded
-                        ? tableName + " → base: " + baseName
-                        : tableName;
-                matched.add(new TableFileContent(displayName, content.trim(), estimatedRows, isSharded));
-            } catch (IOException e) {
-                log.warn("Failed to read DDL file {}: {}", ddlFile, e.getMessage());
+            TableFileContent content = resolveFromCache(tableName, resolvedBaseNames);
+            if (content == null) {
+                content = resolveFromFile(tableName, resolvedBaseNames);
+            }
+            if (content != null) {
+                matched.add(content);
             }
         }
 
         if (matched.isEmpty()) {
-            log.debug("No DDL files found for tables {}", tableNames);
+            log.debug("No DDL found for tables {}", tableNames);
             return "";
         }
 
         return formatContext(matched);
     }
 
-    /**
-     * 解析 DDL 文件路径：先精确匹配，未找到则尝试去除分表后缀匹配基础表。
-     */
+    /** 从缓存中获取表结构 */
+    private TableFileContent resolveFromCache(String tableName, Set<String> resolvedBaseNames) {
+        TableMeta meta = cacheService.get(tableName);
+        if (meta == null || meta.getDdlText() == null) return null;
+
+        String baseName = meta.getTableName().toLowerCase();
+        if (!resolvedBaseNames.add(baseName)) return null;
+
+        boolean isSharded = !baseName.equalsIgnoreCase(tableName);
+        String displayName = isSharded
+                ? tableName + " → base: " + baseName
+                : tableName;
+
+        StringBuilder contentBuilder = new StringBuilder();
+        if (meta.getEstimatedRows() != null && meta.getEstimatedRows() > 0) {
+            contentBuilder.append("-- Estimated Rows: ").append(meta.getEstimatedRows()).append("\n\n");
+        }
+        contentBuilder.append(meta.getDdlText());
+        if (meta.getIndexStats() != null && !meta.getIndexStats().isBlank()) {
+            contentBuilder.append("\n\n").append(meta.getIndexStats());
+        }
+
+        long rows = meta.getEstimatedRows() != null ? meta.getEstimatedRows() : 0;
+        return new TableFileContent(displayName, contentBuilder.toString().trim(), rows, isSharded);
+    }
+
+    /** 降级：从文件系统获取表结构 */
+    private TableFileContent resolveFromFile(String tableName, Set<String> resolvedBaseNames) {
+        if (!Files.isDirectory(tableMetaDir)) return null;
+
+        Path ddlFile = resolveDdlFile(tableMetaDir, tableName);
+        if (ddlFile == null) return null;
+
+        String baseName = ddlFile.getFileName().toString().replace(".sql", "");
+        if (!resolvedBaseNames.add(baseName)) return null;
+
+        try {
+            String content = Files.readString(ddlFile, StandardCharsets.UTF_8);
+            long estimatedRows = extractEstimatedRows(content);
+            boolean isSharded = !baseName.equalsIgnoreCase(tableName);
+            String displayName = isSharded
+                    ? tableName + " → base: " + baseName
+                    : tableName;
+            return new TableFileContent(displayName, content.trim(), estimatedRows, isSharded);
+        } catch (IOException e) {
+            log.warn("Failed to read DDL file {}: {}", ddlFile, e.getMessage());
+            return null;
+        }
+    }
+
     private Path resolveDdlFile(Path projectDir, String tableName) {
         Path exact = projectDir.resolve(tableName + ".sql");
         if (Files.exists(exact)) return exact;

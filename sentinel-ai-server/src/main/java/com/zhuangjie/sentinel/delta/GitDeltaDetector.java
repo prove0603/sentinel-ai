@@ -1,9 +1,12 @@
 package com.zhuangjie.sentinel.delta;
 
 import lombok.extern.slf4j.Slf4j;
+import org.eclipse.jgit.api.Git;
+import org.eclipse.jgit.api.LogCommand;
 import org.eclipse.jgit.diff.DiffEntry;
 import org.eclipse.jgit.diff.DiffFormatter;
 import org.eclipse.jgit.lib.ObjectId;
+import org.eclipse.jgit.lib.PersonIdent;
 import org.eclipse.jgit.lib.Repository;
 import org.eclipse.jgit.revwalk.RevCommit;
 import org.eclipse.jgit.revwalk.RevWalk;
@@ -14,7 +17,9 @@ import org.springframework.stereotype.Component;
 import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Uses JGit to detect file changes between two Git commits.
@@ -100,6 +105,90 @@ public class GitDeltaDetector {
             log.error("Failed to detect git changes: {} → {}", fromCommitHash, toCommitHash, e);
             throw new RuntimeException("Failed to detect git changes", e);
         }
+    }
+
+    /**
+     * 获取 HEAD commit 的作者信息（用户名）。
+     */
+    public String resolveHeadAuthor(Path repoRoot) {
+        try (Repository repo = openRepository(repoRoot);
+             RevWalk revWalk = new RevWalk(repo)) {
+            ObjectId head = repo.resolve("HEAD");
+            if (head == null) return null;
+            RevCommit commit = revWalk.parseCommit(head);
+            PersonIdent author = commit.getAuthorIdent();
+            return author != null ? author.getName() : null;
+        } catch (IOException e) {
+            log.warn("Failed to resolve HEAD author for repo: {}", repoRoot, e);
+            return null;
+        }
+    }
+
+    /**
+     * 获取 HEAD commit 的作者邮箱。
+     */
+    public String resolveHeadAuthorEmail(Path repoRoot) {
+        try (Repository repo = openRepository(repoRoot);
+             RevWalk revWalk = new RevWalk(repo)) {
+            ObjectId head = repo.resolve("HEAD");
+            if (head == null) return null;
+            RevCommit commit = revWalk.parseCommit(head);
+            PersonIdent author = commit.getAuthorIdent();
+            return author != null ? author.getEmailAddress() : null;
+        } catch (IOException e) {
+            log.warn("Failed to resolve HEAD author email for repo: {}", repoRoot, e);
+            return null;
+        }
+    }
+
+    /**
+     * 获取指定文件最新一次提交的作者名。
+     * 等价于 git log -1 --format='%an' -- filePath
+     */
+    public String resolveFileAuthor(Path repoRoot, String filePath) {
+        try (Repository repo = openRepository(repoRoot);
+             Git git = new Git(repo)) {
+            LogCommand logCmd = git.log().addPath(filePath).setMaxCount(1);
+            for (RevCommit commit : logCmd.call()) {
+                PersonIdent author = commit.getAuthorIdent();
+                return author != null ? author.getName() : null;
+            }
+            return null;
+        } catch (Exception e) {
+            log.debug("Failed to resolve author for file {}: {}", filePath, e.getMessage());
+            return null;
+        }
+    }
+
+    /**
+     * 批量获取多个文件的最新提交者。
+     * 对相同文件只查询一次，返回 filePath → authorName 映射。
+     */
+    public Map<String, String> resolveFileAuthors(Path repoRoot, List<String> filePaths) {
+        Map<String, String> result = new HashMap<>();
+        if (filePaths == null || filePaths.isEmpty()) return result;
+
+        try (Repository repo = openRepository(repoRoot);
+             Git git = new Git(repo)) {
+            for (String filePath : filePaths) {
+                if (result.containsKey(filePath)) continue;
+                try {
+                    LogCommand logCmd = git.log().addPath(filePath).setMaxCount(1);
+                    for (RevCommit commit : logCmd.call()) {
+                        PersonIdent author = commit.getAuthorIdent();
+                        if (author != null) {
+                            result.put(filePath, author.getName());
+                        }
+                        break;
+                    }
+                } catch (Exception e) {
+                    log.debug("Failed to resolve author for file {}: {}", filePath, e.getMessage());
+                }
+            }
+        } catch (Exception e) {
+            log.warn("Failed to open repository for batch author resolution: {}", e.getMessage());
+        }
+        return result;
     }
 
     private Repository openRepository(Path repoRoot) throws IOException {

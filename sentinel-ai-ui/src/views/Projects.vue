@@ -62,7 +62,7 @@
         <!-- REMOTE mode -->
         <template v-if="form.repoMode === 'REMOTE'">
           <el-form-item label="Git 远程 URL" required>
-            <el-input v-model="form.gitRemoteUrl" placeholder="如 https://git.silvrr.com/risk-backend/collection-management.git" />
+            <el-input v-model="form.gitRemoteUrl" placeholder="如 https://github.com/user/project.git" />
             <div class="form-tip">支持 HTTPS 或 SSH 地址，首次保存后将自动 clone 到本地</div>
           </el-form-item>
           <el-form-item label="默认分支">
@@ -90,7 +90,7 @@
           Git 平台 Token 在配置文件中统一设置，此处只需填写项目在 Git 平台上的路径，用于「代码变更」页面查看分支和提交。
         </div>
         <el-form-item label="Git 项目路径">
-          <el-input v-model="form.gitProjectPath" placeholder="如 risk-backend/collection-management" />
+          <el-input v-model="form.gitProjectPath" placeholder="如 my-org/my-project" />
         </el-form-item>
       </el-form>
       <template #footer>

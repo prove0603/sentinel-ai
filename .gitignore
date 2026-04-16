@@ -44,6 +44,11 @@ logs/
 ### Local config with secrets (API keys, passwords) ###
 **/application-dev.yml
 **/application-local.yml
+**/wecom-user-mapping.yml
+
+### Deploy scripts (contain local paths/IP) ###
+deploy.ps1
+deploy.sh
 
 ### H2 database files ###
 data/

@@ -52,9 +52,9 @@ sentinel-ai/
 ├── pom.xml                          # 父 POM（含 Spring AI BOM 1.1.4）
 ├── docker-compose.yml               # PostgreSQL + pgvector (RAG 向量数据库)
 ├── table-meta/                      # 表结构 DDL 文件（扁平目录，不按项目分子目录）
-│   ├── t_case.sql                   # 每张表一个 .sql 文件
-│   ├── t_case_cf.sql                # 含 -- Estimated Rows: N 头部 + SHOW CREATE TABLE 输出
-│   └── ...                          # 共 870 张表（通过远程数据平台从生产环境采集）
+│   ├── ...
+├── sentinel-ai-server/
+│   ├── src/main/resources/wecom-user-mapping.yml  # Git 用户名 → 企业微信昵称 映射文件（classpath 资源，启动时加载缓存，已在 .gitignore）
 ├── sentinel-ai-server/              # Spring Boot 后端
 │   ├── pom.xml
 │   └── src/main/java/com/zhuangjie/sentinel/
@@ -93,14 +93,19 @@ sentinel-ai/
 │       │   ├── DeltaResult.java
 │       │   ├── SqlHashComparator.java
 │       │   └── ComparisonResult.java
-│       ├── knowledge/               # 表结构知识库 ← P5+P7（文件方案 + 远程平台采集）
+│       ├── knowledge/               # 表结构知识库 ← P5+P7+P9.2（DB + 缓存 + 远程平台采集）
+│       │   ├── TableMetaCacheService.java   # 表结构内存缓存（启动时全量加载 t_table_meta，支持分表匹配）← P9.2
+│       │   ├── KnowledgeContextBuilder.java # 优先从缓存获取表结构，降级到文件 → 构建 AI Prompt 上下文
 │       │   ├── DdlExporter.java            # 独立命令行工具：从 MySQL 拉取 DDL 存为文件
 │       │   ├── TableMetaCollector.java      # JDBC 自动采集表结构（供 KnowledgeService 调用）
 │       │   ├── TableNameExtractor.java      # JSqlParser 提取 SQL 中引用的表名
-│       │   ├── KnowledgeContextBuilder.java # 从 DDL 文件读取表结构 → 构建 AI Prompt 上下文
 │       │   ├── DataPlatformConfig.java      # 远程数据平台配置（含 API 路径、分批大小等）← P7
 │       │   ├── DataPlatformClient.java      # 远程数据平台 HTTP 客户端（SSO 登录 + SQL 查询）← P7
 │       │   └── RemoteDdlCollector.java      # 通过远程平台采集/对比生产环境 DDL（分批处理）← P7
+│       ├── notification/            # 通知模块（企业微信等）
+│       │   ├── WeComConfig.java           # 企业微信群机器人配置（Webhook URL + 前端地址）
+│       │   ├── WeComNotificationService.java # 企业微信通知服务（扫描通知 + 手动提醒 @负责人）
+│       │   └── UserMappingService.java    # Git 用户名 → owner + 企业微信昵称 映射服务（优先 classpath 后 fallback 文件系统，启动缓存）
 │       ├── rag/                     # RAG 业务知识库 ← P6
 │       │   ├── RagConfig.java             # RAG 基础设施：PG DataSource + PgVectorStore + EmbeddingModel
 │       │   ├── DashScopeEmbeddingModel.java # DashScope TextEmbedding → Spring AI EmbeddingModel 适配器
@@ -127,7 +132,7 @@ sentinel-ai/
 │       │   └── format.ts                   # 统一工具函数（formatTime 等）
 │       └── views/
 │           ├── SqlRecords.vue              # SQL 记录列表（支持筛选 + 详情抽屉 + ?recordId= 参数自动打开指定记录）
-│           ├── Analysis.vue               # SQL 分析结果列表（含 SQL 记录 ID 列 + 跳转链接 + 详情抽屉含跳转）
+│           ├── Analysis.vue               # SQL 分析结果列表（含 SQL 记录 ID 列 + 负责人列 + 提醒按钮 + 跳转链接 + 详情抽屉含跳转和提醒）
 │           ├── Prompts.vue                 # Prompt 模板管理页面（CRUD + 启停 + 内容编辑）
 │           └── ...
 └── .cursor/rules/
@@ -170,17 +175,22 @@ sentinel-ai/
   - Prompt 包含：SQL 信息 + 表结构 DDL + **RAG 业务知识**（P6）
   - 输出：`BeanOutputConverter` 结构化 JSON（riskLevel, issues, indexSuggestions, rewriteSuggestions, explanation）
 
-### Knowledge (表结构知识库) — ✅ P5+P7 已实现（文件方案 + 远程平台采集）
-- **架构：** 文件方案，DDL 文件扁平存储在 `table-meta/` 目录下（不按项目分子目录）
-- **目录结构：** `table-meta/{table_name}.sql`
-- **文件格式：** `-- Estimated Rows: N` 头部注释 + `SHOW CREATE TABLE` 完整输出（含索引），可选追加 `-- === Index Statistics ===` 索引统计区域
+### Knowledge (表结构知识库) — ✅ P5+P7+P9.2 已实现（DB + 内存缓存 + 远程平台采集）
+- **架构演进（P9.2）：** 从纯文件方案升级为 **DB 持久化 + 内存缓存**，文件作为降级备选
+  - **主存储：** `t_table_meta` 表（DDL、行数估算、索引统计分字段存储）
+  - **缓存：** `TableMetaCacheService` 启动时全量加载到 `ConcurrentHashMap`，运行时通过 CRUD 操作同步更新
+  - **降级：** 缓存未命中时降级到 `table-meta/{table_name}.sql` 文件读取（向后兼容）
+- **初始化：** `POST /api/table-meta/init-from-files` 从 table-meta 目录批量导入到 DB（解析 DDL + 行数 + 索引统计）
 - **DDL 采集方式：**
   1. `DdlExporter` - 独立命令行工具（JDBC 直连数据库，适用于开发环境）
   2. `RemoteDdlCollector` - 通过远程数据平台 API 采集（适用于生产环境，网络隔离场景）← P7
+  3. **手动维护** — 前端支持新增/编辑表结构（适用于少量表或特殊表）← P9.2
+- `TableMetaCacheService` - **P9.2 新增**，启动时从 DB 全量加载，支持分表后缀匹配（如 t_log_202603 → t_log）
+- `TableMetaService` - **P9.2 新增**，核心业务：文件导入 DB、远程单表刷新、文件与 DB 同步
 - `TableMetaCollector` - 供 `KnowledgeService` 调用的 JDBC 采集组件
 - `TableNameExtractor` - JSqlParser 从 SQL 中提取所有引用表名（含 JOIN/子查询/DML）
-- `KnowledgeContextBuilder` - 从 DDL 文件读取表结构 → 格式化为 AI Prompt 上下文
-  - `buildContext(sql)` — 提取 SQL 中的表名 → 在 `table-meta/` 下查找对应 .sql 文件 → 读取内容 → 解析行数 → 构建上下文
+- `KnowledgeContextBuilder` - **P9.2 重构**，优先从缓存获取表结构，降级到文件 → 格式化为 AI Prompt 上下文
+  - `buildContext(sql)` — 提取 SQL 中的表名 → **缓存查找**（降级文件查找） → 构建上下文
 - `KnowledgeService` - 编排采集→存文件流程
 - AI Prompt 注入：`AiSqlAnalyzer` 调用 `KnowledgeContextBuilder.buildContext(sql)` 获取表结构上下文
 
@@ -293,7 +303,7 @@ sentinel-ai/
 
 ```
 t_project_config   -- 项目配置（含 git_remote_url, git_branch, webhook_secret）
-t_table_meta       -- 表结构元数据（历史遗留，文件方案后不再核心依赖）
+t_table_meta       -- 表结构元数据（P9.2 升级为主存储：DDL + 行数 + 索引统计，启动时加载到内存缓存）
 t_sql_record       -- SQL 记录（含 project_id）
 t_scan_batch       -- 扫描批次
 t_sql_analysis     -- 分析结果（通过 sql_record_id 关联 project_id）
@@ -315,15 +325,26 @@ knowledge_vector   -- 向量存储（P6 RAG）— PgVectorStore 自动管理
   - `PUT /api/analysis/{id}/handle` - 修改处理状态（支持 status、note、handler）
   - `POST /api/analysis/reanalyze/{sqlRecordId}` - 手动触发单条 SQL 的 AI 分析（复用扫描同款 prompt + DDL + RAG 上下文）
 - `/api/sql-record/*` - SQL 记录
-  - `GET /api/sql-record/page` - 分页查询，支持 projectId、sqlType、sourceType 筛选
+  - `GET /api/sql-record/page` - 分页查询，支持 projectId、sqlType、sourceType、owner 筛选
   - `GET /api/sql-record/{id}` - 按 ID 获取单条 SQL 记录
+  - `POST /api/sql-record/{id}/remind` - 提醒开发人员处理风险 SQL（企业微信群 @负责人）
+  - `POST /api/sql-record/fill-owners?projectId=` - 工具接口：扫描 Git 仓库补充 owner（不传 projectId 处理所有项目）
+  - `POST /api/sql-record/cleanup` - 工具接口：清理重复和无效 SQL 记录
 - `/api/dashboard/*` - 仪表盘
   - `GET /api/dashboard/overview` - 概览统计（projectCount、totalSqlCount、riskSqlCount、pendingCount）
   - pendingCount 定义：handleStatus='ANALYZED' 且 finalRiskLevel IN ('P0','P1')（AI已分析但尚未人工处理的高危 SQL）
-- `/api/table-meta/*` - 表结构元数据管理
-  - `POST /api/table-meta/remote-collect` — 远程平台 DDL 全量采集（分批，支持 reAnalyzeChanged 参数）
-  - `POST /api/table-meta/refresh-ddl?limit=10` — ✅ P7.1：刷新已有表的 DDL（limit 默认 10，-1 不限）
-  - `POST /api/table-meta/refresh-index-stats?limit=10` — ✅ P7.1：刷新已有表的索引统计（limit 默认 10，-1 不限）
+- `/api/table-meta/*` - 表结构元数据管理（P9.2 升级为 DB 驱动）
+  - `GET /api/table-meta/page` — 分页查询（支持表名模糊搜索）← P9.2
+  - `GET /api/table-meta/{id}` — 详情 ← P9.2
+  - `POST /api/table-meta` — 手动新增 ← P9.2
+  - `PUT /api/table-meta/{id}` — 编辑 ← P9.2
+  - `DELETE /api/table-meta/{id}` — 删除 ← P9.2
+  - `POST /api/table-meta/refresh-single/{tableName}` — 从 DBA 平台刷新单表 DDL + 索引 ← P9.2
+  - `POST /api/table-meta/init-from-files` — 从 table-meta 目录批量导入到 DB ← P9.2
+  - `POST /api/table-meta/reload-cache` — 手动刷新内存缓存 ← P9.2
+  - `POST /api/table-meta/remote-collect` — 远程平台 DDL 全量采集（分批，同步到 DB + 缓存）
+  - `POST /api/table-meta/refresh-ddl?limit=-1` — 批量刷新已有表的 DDL（同步到 DB + 缓存）
+  - `POST /api/table-meta/refresh-index-stats?limit=-1` — 批量刷新已有表的索引统计（同步到 DB + 缓存）
   - `GET /api/table-meta/detect-changes` — 检测本地 DDL 与线上差异（分批对比）
   - `GET /api/table-meta/connection-test` — 远程平台连接测试
   - `GET /api/table-meta/list` — 列出所有已采集的 DDL 表
@@ -361,7 +382,7 @@ knowledge_vector   -- 向量存储（P6 RAG）— PgVectorStore 自动管理
 - 虚拟线程：`spring.threads.virtual.enabled=true`
 - Java 21 特性：record, sealed interface, pattern matching, 文本块
 - AI 调用缓存：Caffeine (key = sql_hash)
-- 表结构知识：文件方案 `table-meta/{table}.sql`（扁平目录，不按项目分子目录）
+- 表结构知识：**DB 持久化 + 内存缓存**（`t_table_meta` 表 + `TableMetaCacheService`），文件 `table-meta/{table}.sql` 作为降级备选
 - 统一使用 PostgreSQL 18 + pgvector 0.8.2（业务表 + 向量表共用一个数据库）
 - 前端时间格式化：所有页面统一使用 `utils/format.ts` 的 `formatTime()`，将 ISO `LocalDateTime` 截断到秒（`YYYY-MM-DD HH:mm:ss`）
 - 前端开发代理：Vite `proxy /api -> http://localhost:8090`
@@ -567,7 +588,32 @@ table-meta/
   - ✅ 前端 `Prompts.vue` — 模板管理页面（表格 + 编辑弹窗 + 启停开关）
   - ✅ 初始化 SQL 脚本：`db/init-prompt-template.sql`
   - ✅ 侧边栏新增「Prompt 管理」入口
-- **P9：** 完善 Dashboard、通知、导出报告、开源准备
+- **P9.1：** 企业微信群机器人通知 + SQL 负责人 + 提醒功能 ← **✅ 已完成**
+  - ✅ `WeComConfig` — 企业微信群机器人配置（Webhook URL + 前端地址）
+  - ✅ `WeComNotificationService` — 扫描完成通知 + 手动提醒开发人员（Markdown 内嵌 @昵称 实现群内提醒）
+  - ✅ `UserMappingService` — classpath 资源（`src/main/resources/wecom-user-mapping.yml`）管理 Git 用户名 → owner + 企业微信昵称映射，启动时加载缓存，优先 classpath 后 fallback 文件系统
+  - ✅ `GitDeltaDetector` 新增 `resolveFileAuthor()` / `resolveFileAuthors()` — 获取文件最新 Git 提交者
+  - ✅ `SqlRecord` 新增 `owner` 字段 — 扫描时自动设置负责人（Git 提交者 → 映射 → 默认 fallback）
+  - ✅ `SqlRecordController` 新增 `POST /{id}/remind` — 企业微信群 @负责人提醒
+  - ✅ `SqlRecordController` 新增 `POST /fill-owners` — 工具接口，扫描 Git 仓库补充 owner 字段
+  - ✅ `SqlRecordController` 新增 `POST /cleanup` — 工具接口，清理重复和无效 SQL 记录
+  - ✅ `ScanService` 新增 `fillMissingOwners()` / `fillAllMissingOwners()` — 批量填充负责人
+  - ✅ 前端 `Analysis.vue` — 列表新增负责人列 + 提醒按钮，详情抽屉新增负责人展示 + 提醒开发人员按钮
+  - ✅ 前端 `SqlRecords.vue` — 新增负责人列 + 负责人筛选
+  - ✅ 后端 `AnalysisController.page` — 分页结果批量填充 owner（通过 SqlRecord 关联查询）
+  - ✅ `SqlAnalysis` 新增 `@TableField(exist = false) owner` 虚拟字段
+  - ✅ 非强制依赖：`@ConditionalOnProperty` + `@Autowired(required = false)`，未配置不影响应用启动
+- **P9.2：** 表结构管理 DB 化 + 内存缓存 + 前端 CRUD ← **✅ 已完成**
+  - ✅ `TableMeta` 实体新增 `indexStats` 字段，数据库新增 `index_stats` 列 + `table_name` 唯一约束
+  - ✅ `TableMetaCacheService` — 启动时从 DB 全量加载到 `ConcurrentHashMap`，支持分表后缀匹配
+  - ✅ `TableMetaService` — 文件导入 DB（解析 DDL + 行数 + 索引统计）、远程单表刷新、文件与 DB 同步
+  - ✅ `KnowledgeContextBuilder` 重构 — 优先从缓存获取，降级到文件系统，不再硬依赖文件目录
+  - ✅ `TableMetaController` 重构 — 新增分页查询、CRUD、单表刷新、文件初始化、缓存重载接口
+  - ✅ 批量刷新 DDL/索引统计后自动同步到 DB + 缓存
+  - ✅ 前端 `TableMeta.vue` 重构 — 从 tag 列表改为分页表格 + 搜索 + 详情弹窗（DDL/索引 Tab）+ 编辑 + 删除 + 单表刷新 + 文件初始化
+  - ✅ 初始化：从 table-meta 目录 282 个 .sql 文件批量导入到 DB
+  - ✅ `wecom-user-mapping.yml` 添加到 `.gitignore`
+- **P9：** 完善 Dashboard、导出报告、开源准备
 
 ---
 
@@ -580,7 +626,7 @@ table-meta/
 - **PostgreSQL：** `localhost:5432/sentinel_ai`（本地安装 PG18 + pgvector 0.8.2）
 - **建表脚本：** `src/main/resources/db/schema-pg.sql`（首次需手动执行）
 - **初始化数据：** `src/main/resources/db/init-prompt-template.sql`（Prompt 模板初始数据，幂等执行）
-- **表结构 DDL 目录：** `table-meta/`（扁平目录，可通过远程数据平台采集或手动维护）
+- **表结构 DDL 目录：** `table-meta/`（扁平目录，降级备选；主存储为 `t_table_meta` 表 + 内存缓存）
 - **launch.json：** 含 JVM UTF-8 参数 + `integratedTerminal` console 模式 + API Key 环境变量
 - **settings.json：** 终端自动 `chcp 65001`（UTF-8）+ java.debug.settings.vmArgs
 - **Git 仓库克隆目录：** `${user.home}/.sentinel-ai/repos/`（通过 `sentinel.git.clone-base-dir` 配置）

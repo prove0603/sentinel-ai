@@ -136,7 +136,7 @@ public class GitRepoManager {
 
     /**
      * Extracts the repository name from a git remote URL.
-     * e.g. "https://git.silvrr.com/risk-backend/collection-management.git" → "collection-management"
+     * e.g. "https://github.com/user/collection-management.git" → "collection-management"
      */
     private String extractRepoName(String remoteUrl) {
         if (remoteUrl == null || remoteUrl.isBlank()) return null;

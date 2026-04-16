@@ -47,7 +47,7 @@ public class RemoteDdlCollector {
         List<String> localTables = listLocalTables();
         if (localTables.isEmpty()) {
             log.info("[refreshDdl] No local table-meta files found, nothing to refresh");
-            return new RefreshResult(0, 0, 0, 0, List.of());
+            return new RefreshResult(0, 0, 0, 0, List.of(), List.of());
         }
 
         List<String> tablesToProcess = applyLimit(localTables, limit);
@@ -58,6 +58,7 @@ public class RemoteDdlCollector {
         int batchSize = config.getCollectBatchSize();
         int success = 0, failed = 0, updated = 0;
         List<String> updatedTables = new ArrayList<>();
+        List<String> failedTables = new ArrayList<>();
 
         List<List<String>> batches = partition(tablesToProcess, batchSize);
         for (int i = 0; i < batches.size(); i++) {
@@ -72,6 +73,7 @@ public class RemoteDdlCollector {
                     if (ddl == null || ddl.isBlank()) {
                         log.warn("[refreshDdl] No DDL returned for table: {}", tableName);
                         failed++;
+                        failedTables.add(tableName);
                         continue;
                     }
                     log.debug("[refreshDdl] Got DDL for {} ({} chars)", tableName, ddl.length());
@@ -103,6 +105,7 @@ public class RemoteDdlCollector {
                 } catch (Exception e) {
                     log.warn("[refreshDdl] Failed for table {}: {}", tableName, e.getMessage());
                     failed++;
+                    failedTables.add(tableName);
                 }
             }
 
@@ -114,9 +117,9 @@ public class RemoteDdlCollector {
             }
         }
 
-        log.info("[refreshDdl] Completed: total={}, success={}, failed={}, updated={}, updatedTables={}",
-                tablesToProcess.size(), success, failed, updated, updatedTables);
-        return new RefreshResult(tablesToProcess.size(), success, failed, updated, updatedTables);
+        log.info("[refreshDdl] Completed: total={}, success={}, failed={}, updated={}, updatedTables={}, failedTables={}",
+                tablesToProcess.size(), success, failed, updated, updatedTables, failedTables);
+        return new RefreshResult(tablesToProcess.size(), success, failed, updated, updatedTables, failedTables);
     }
 
     /**
@@ -129,7 +132,7 @@ public class RemoteDdlCollector {
         List<String> localTables = listLocalTables();
         if (localTables.isEmpty()) {
             log.info("[refreshIndexStats] No local table-meta files found, nothing to refresh");
-            return new RefreshResult(0, 0, 0, 0, List.of());
+            return new RefreshResult(0, 0, 0, 0, List.of(), List.of());
         }
 
         List<String> tablesToProcess = applyLimit(localTables, limit);
@@ -140,6 +143,7 @@ public class RemoteDdlCollector {
         int batchSize = config.getDiffBatchSize();
         int success = 0, failed = 0, updated = 0;
         List<String> updatedTables = new ArrayList<>();
+        List<String> failedTables = new ArrayList<>();
 
         List<List<String>> batches = partition(tablesToProcess, batchSize);
         for (int i = 0; i < batches.size(); i++) {
@@ -180,6 +184,7 @@ public class RemoteDdlCollector {
                 } catch (Exception e) {
                     log.warn("[refreshIndexStats] Failed for table {}: {}", tableName, e.getMessage());
                     failed++;
+                    failedTables.add(tableName);
                 }
             }
 
@@ -191,9 +196,9 @@ public class RemoteDdlCollector {
             }
         }
 
-        log.info("[refreshIndexStats] Completed: total={}, success={}, failed={}, updated={}, updatedTables={}",
-                tablesToProcess.size(), success, failed, updated, updatedTables);
-        return new RefreshResult(tablesToProcess.size(), success, failed, updated, updatedTables);
+        log.info("[refreshIndexStats] Completed: total={}, success={}, failed={}, updated={}, updatedTables={}, failedTables={}",
+                tablesToProcess.size(), success, failed, updated, updatedTables, failedTables);
+        return new RefreshResult(tablesToProcess.size(), success, failed, updated, updatedTables, failedTables);
     }
 
     /** 全量采集所有表的 DDL（从零开始） */
@@ -486,7 +491,8 @@ public class RemoteDdlCollector {
 
     // ─── Result Records ────────────────────────────────────────────
 
-    public record RefreshResult(int total, int success, int failed, int updated, List<String> updatedTables) {
+    public record RefreshResult(int total, int success, int failed, int updated,
+                                List<String> updatedTables, List<String> failedTables) {
     }
 
     public record CollectionResult(int totalTables, int successCount, int failedCount,

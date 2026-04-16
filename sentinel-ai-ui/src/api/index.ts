@@ -49,12 +49,22 @@ export const analysisApi = {
 }
 
 export const tableMetaApi = {
+  page: (params: any) => api.get('/table-meta/page', { params }),
+  getById: (id: number) => api.get(`/table-meta/${id}`),
+  create: (data: any) => api.post('/table-meta', data),
+  update: (id: number, data: any) => api.put(`/table-meta/${id}`, data),
+  delete: (id: number) => api.delete(`/table-meta/${id}`),
+  refreshSingle: (tableName: string) =>
+    api.post(`/table-meta/refresh-single/${tableName}`, null, { timeout: 120000 }),
+  initFromFiles: () =>
+    api.post('/table-meta/init-from-files', null, { timeout: 600000 }),
   refreshDdl: (limit: number = -1) =>
     api.post('/table-meta/refresh-ddl', null, { params: { limit }, timeout: 600000 }),
   refreshIndexStats: (limit: number = -1) =>
     api.post('/table-meta/refresh-index-stats', null, { params: { limit }, timeout: 600000 }),
   list: () => api.get('/table-meta/list'),
   connectionTest: () => api.get('/table-meta/connection-test'),
+  reloadCache: () => api.post('/table-meta/reload-cache'),
 }
 
 export const gitApi = {
@@ -70,6 +80,7 @@ export const gitApi = {
 export const sqlRecordApi = {
   page: (params: any) => api.get('/sql-record/page', { params }),
   getById: (id: number) => api.get(`/sql-record/${id}`),
+  remind: (id: number) => api.post(`/sql-record/${id}/remind`),
 }
 
 export const exemptionApi = {

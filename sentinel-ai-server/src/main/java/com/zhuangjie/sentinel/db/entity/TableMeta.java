@@ -22,8 +22,11 @@ public class TableMeta {
 
     private Integer avgRowLength;
 
-    /** JSON format index info */
+    /** JSON 格式的索引信息（兼容旧字段） */
     private String indexInfo;
+
+    /** 文本格式的索引统计（从 DBA 平台采集） */
+    private String indexStats;
 
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createTime;

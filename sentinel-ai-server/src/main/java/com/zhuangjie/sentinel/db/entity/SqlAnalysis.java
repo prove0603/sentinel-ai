@@ -56,4 +56,7 @@ public class SqlAnalysis {
 
     @TableField(fill = FieldFill.INSERT)
     private LocalDateTime createTime;
+
+    @TableField(exist = false)
+    private String owner;
 }

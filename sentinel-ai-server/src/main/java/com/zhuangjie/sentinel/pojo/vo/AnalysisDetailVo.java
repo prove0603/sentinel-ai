@@ -22,6 +22,8 @@ public class AnalysisDetailVo {
 
     private String sourceLocation;
 
+    private String owner;
+
     /** DDL content read from table-meta files for the tables referenced in this SQL */
     private String tableMetaContext;
 }

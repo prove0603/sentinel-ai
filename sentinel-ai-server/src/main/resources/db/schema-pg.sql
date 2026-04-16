@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS t_sql_record (
     source_type     VARCHAR(20) NOT NULL,
     source_file     VARCHAR(500) NOT NULL,
     source_location VARCHAR(200),
+    owner           VARCHAR(50),
     first_scan_id   BIGINT,
     last_scan_id    BIGINT,
     status          SMALLINT DEFAULT 1,

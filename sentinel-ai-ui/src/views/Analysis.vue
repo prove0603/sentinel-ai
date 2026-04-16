@@ -70,6 +70,11 @@
       <el-table-column prop="aiRiskLevel" label="AI 判定" width="100" />
       <el-table-column prop="aiEstimatedExecTimeMs" label="预估耗时(ms)" width="120" />
       <el-table-column prop="aiEstimatedScanRows" label="预估扫描行数" width="130" />
+      <el-table-column prop="owner" label="负责人" width="120">
+        <template #default="{ row }">
+          <span>{{ row.owner ?? '-' }}</span>
+        </template>
+      </el-table-column>
       <el-table-column prop="handleStatus" label="状态" width="110">
         <template #default="{ row }">
           <el-tag :type="statusTagType(row.handleStatus)" size="small">{{ statusLabel(row.handleStatus) }}</el-tag>
@@ -78,9 +83,10 @@
       <el-table-column label="分析时间" min-width="180" sortable>
         <template #default="{ row }">{{ formatTime(row.createTime) }}</template>
       </el-table-column>
-      <el-table-column label="操作" width="100">
+      <el-table-column label="操作" width="160">
         <template #default="{ row }">
           <el-button size="small" link type="primary" @click="viewDetail(row)">详情</el-button>
+          <el-button size="small" link type="warning" @click="remindFromList(row)" :loading="remindingId === row.id">提醒</el-button>
         </template>
       </el-table-column>
     </el-table>
@@ -128,6 +134,15 @@
           </el-descriptions-item>
           <el-descriptions-item label="SQL 类型">{{ currentDetail.sqlType ?? '-' }}</el-descriptions-item>
           <el-descriptions-item label="来源类型">{{ currentDetail.sourceType ?? '-' }}</el-descriptions-item>
+          <el-descriptions-item label="负责人">
+            <span>{{ currentDetail.owner ?? '-' }}</span>
+            <el-button
+              v-if="currentDetail.analysis?.sqlRecordId"
+              size="small" type="warning" link style="margin-left: 8px"
+              @click="remindFromDetail"
+              :loading="remindingId === currentDetail.analysis?.id"
+            >提醒开发人员</el-button>
+          </el-descriptions-item>
           <el-descriptions-item label="SQL 记录">
             <el-link
               v-if="currentDetail.analysis?.sqlRecordId"
@@ -190,8 +205,8 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
-import { ElMessage } from 'element-plus'
-import { analysisApi, projectApi } from '../api'
+import { ElMessage, ElMessageBox } from 'element-plus'
+import { analysisApi, projectApi, sqlRecordApi } from '../api'
 import { formatTime } from '../utils/format'
 
 const router = useRouter()
@@ -216,6 +231,7 @@ const currentDetail = ref<any>(null)
 const noteDialogVisible = ref(false)
 const handleNote = ref('')
 const pendingStatus = ref('')
+const remindingId = ref<number | null>(null)
 
 const statusOptions = [
   { value: 'ANALYZED', label: 'AI已分析' },
@@ -364,6 +380,49 @@ const confirmStatusChange = async () => {
     loadData()
   } catch {
     ElMessage.error('状态更新失败')
+  }
+}
+
+const remindFromList = async (row: any) => {
+  if (!row?.sqlRecordId) {
+    ElMessage.warning('该分析记录没有关联的 SQL 记录')
+    return
+  }
+  try {
+    await ElMessageBox.confirm('确认通过企业微信提醒负责人处理此 SQL？', '提醒确认', {
+      confirmButtonText: '发送提醒', cancelButtonText: '取消', type: 'info'
+    })
+  } catch { return }
+
+  remindingId.value = row.id
+  try {
+    const res: any = await sqlRecordApi.remind(row.sqlRecordId)
+    ElMessage.success(res.data || '提醒已发送')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.message || '提醒发送失败')
+  } finally {
+    remindingId.value = null
+  }
+}
+
+const remindFromDetail = async () => {
+  const sqlRecordId = currentDetail.value?.analysis?.sqlRecordId
+  if (!sqlRecordId) return
+  const owner = currentDetail.value?.owner ?? '负责人'
+  try {
+    await ElMessageBox.confirm(`确认通过企业微信提醒 ${owner} 处理此 SQL？`, '提醒确认', {
+      confirmButtonText: '发送提醒', cancelButtonText: '取消', type: 'info'
+    })
+  } catch { return }
+
+  remindingId.value = currentDetail.value?.analysis?.id
+  try {
+    const res: any = await sqlRecordApi.remind(sqlRecordId)
+    ElMessage.success(res.data || '提醒已发送')
+  } catch (e: any) {
+    ElMessage.error(e?.response?.data?.message || '提醒发送失败')
+  } finally {
+    remindingId.value = null
   }
 }
 

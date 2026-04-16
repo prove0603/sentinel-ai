@@ -6,17 +6,44 @@ alwaysApply: false
 
 # 部署流程
 
-当前端代码有任何修改（Vue 组件、样式、路由等）后，需要执行以下步骤才能让变更在生产部署中生效：
+## 一键部署（推荐）
 
-## 更新步骤
+在 sentinel-ai 根目录执行：
+
+```powershell
+.\deploy.ps1
+```
+
+可选参数：
+- `.\deploy.ps1 -SkipBuild`   — 跳过前端构建，仅重启后端
+- `.\deploy.ps1 -SkipRestart` — 仅构建前端，不重启后端
+
+## 手动步骤
 
 1. **构建前端**：`cd sentinel-ai-ui && npm run build`
-2. **同步资源到 target**：`mvn resources:resources -pl sentinel-ai-server`（或 `mvn compile -pl sentinel-ai-server`）
-3. **重启后端**（Cursor 中 Shift+F5 停止，F5 启动）
+   - Vite 产物直接输出到 `sentinel-ai-server/src/main/resources/static/`
+2. **同步资源到 target**：`mvn resources:resources -pl sentinel-ai-server`
+3. **重启后端**
+
+## 在 Cursor 中点击运行后端
+
+- 可以正常启动，别人通过内网 IP 也能访问
+- 但 Cursor 运行用的是 `target/classes/static/` 下的资源
+- 如果前端有更新，必须先执行步骤 1 + 2（或 `.\deploy.ps1 -SkipRestart`），再重启后端
+- 否则别人访问到的是旧版前端
+
+## 缓存策略
+
+- `index.html`：`Cache-Control: no-cache, no-store`，浏览器每次请求最新版本
+- `/assets/**`（JS/CSS 带 hash）：`Cache-Control: max-age=365d`，长期缓存
+- 只要资源同步到位，用户刷新即可看到新版本，无需手动清缓存
 
 ## 局域网访问
 
+- **本机内网 IP：** `10.0.112.86`
 - 后端端口：8090，绑定 0.0.0.0
-- 同事访问地址：`http://<本机内网IP>:8090`
+- 同事访问地址：`http://10.0.112.86:8090`
+- 企业微信通知跳转链接也使用此地址（通过 `application-dev.yml` 中 `sentinel.notification.wecom.frontend-url` 配置）
 - 前端产物由 Spring Boot 静态资源提供，无需单独部署前端
 - Windows 防火墙需放行 8090 端口
+- 如内网 IP 变更，需同步修改 `application-dev.yml` 中的 `frontend-url`

@@ -31,6 +31,9 @@ public class SqlRecord {
     /** namespace.id or ClassName.methodName */
     private String sourceLocation;
 
+    /** SQL 负责人（企业微信 userId），由 Git 提交人映射而来 */
+    private String owner;
+
     private Long firstScanId;
 
     private Long lastScanId;

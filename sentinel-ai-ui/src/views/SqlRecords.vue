@@ -29,6 +29,9 @@
           <el-option label="注解 SQL" value="ANNOTATION" />
         </el-select>
       </el-form-item>
+      <el-form-item label="负责人">
+        <el-input v-model="filters.owner" clearable placeholder="搜索负责人" @change="handleFilterChange" style="width: 140px" />
+      </el-form-item>
       <el-form-item>
         <el-button type="primary" @click="loadData">搜索</el-button>
         <el-button @click="resetFilters">重置</el-button>
@@ -47,9 +50,14 @@
           <el-tag size="small" effect="plain">{{ sourceTypeLabel(row.sourceType) }}</el-tag>
         </template>
       </el-table-column>
-      <el-table-column prop="sourceFile" label="源文件" min-width="240" show-overflow-tooltip />
-      <el-table-column prop="sourceLocation" label="定位" width="200" show-overflow-tooltip />
-      <el-table-column prop="sqlText" label="SQL" min-width="300">
+      <el-table-column prop="sourceFile" label="源文件" min-width="220" show-overflow-tooltip />
+      <el-table-column prop="sourceLocation" label="定位" width="180" show-overflow-tooltip />
+      <el-table-column prop="owner" label="负责人" width="120">
+        <template #default="{ row }">
+          <span>{{ row.owner ?? '-' }}</span>
+        </template>
+      </el-table-column>
+      <el-table-column prop="sqlText" label="SQL" min-width="260">
         <template #default="{ row }">
           <div class="sql-preview" @click="viewDetail(row)">{{ truncateSql(row.sqlText) }}</div>
         </template>
@@ -82,13 +90,14 @@
           </el-descriptions-item>
           <el-descriptions-item label="来源类型">{{ sourceTypeLabel(currentRecord.sourceType) }}</el-descriptions-item>
           <el-descriptions-item label="状态">{{ currentRecord.status === 1 ? '活跃' : '已删除' }}</el-descriptions-item>
+          <el-descriptions-item label="负责人">{{ currentRecord.owner ?? '-' }}</el-descriptions-item>
+          <el-descriptions-item label="创建时间">{{ formatTime(currentRecord.createTime) }}</el-descriptions-item>
           <el-descriptions-item label="源文件" :span="2">
             <code>{{ currentRecord.sourceFile }}</code>
           </el-descriptions-item>
           <el-descriptions-item label="定位" :span="2">
             <code>{{ currentRecord.sourceLocation }}</code>
           </el-descriptions-item>
-          <el-descriptions-item label="创建时间">{{ formatTime(currentRecord.createTime) }}</el-descriptions-item>
           <el-descriptions-item label="更新时间">{{ formatTime(currentRecord.updateTime) }}</el-descriptions-item>
         </el-descriptions>
 
@@ -168,10 +177,12 @@ const filters = ref<{
   projectId: number | null
   sqlType: string
   sourceType: string
+  owner: string
 }>({
   projectId: null,
   sqlType: '',
-  sourceType: ''
+  sourceType: '',
+  owner: ''
 })
 
 const sqlTypeTag = (type: string) => {
@@ -205,7 +216,7 @@ const handleFilterChange = () => {
 }
 
 const resetFilters = () => {
-  filters.value = { projectId: null, sqlType: '', sourceType: '' }
+  filters.value = { projectId: null, sqlType: '', sourceType: '', owner: '' }
   page.value = 1
   loadData()
 }
@@ -216,6 +227,7 @@ const loadData = async () => {
     if (filters.value.projectId) params.projectId = filters.value.projectId
     if (filters.value.sqlType) params.sqlType = filters.value.sqlType
     if (filters.value.sourceType) params.sourceType = filters.value.sourceType
+    if (filters.value.owner) params.owner = filters.value.owner
     const res: any = await sqlRecordApi.page(params)
     records.value = res.data?.records ?? []
     total.value = res.data?.total ?? 0

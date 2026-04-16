@@ -43,5 +43,17 @@ sentinel:
     api-url: https://your-gitlab-instance.com
     access-token: your-personal-access-token
     clone-base-dir: ${user.home}/.sentinel-ai/repos
+  notification:
+    # Git username -> WeCom userId mapping file path (relative to project root)
+    # See wecom-user-mapping.yml for format. Cached on startup, restart to refresh.
+    user-mapping-file: wecom-user-mapping.yml
+    wecom:
+      # Set to true to enable WeCom group robot notifications and remind feature
+      enabled: false
+      # WeCom group robot webhook URL
+      # Get it from: WeCom Group Chat -> Add Robot -> Custom Robot -> Copy Webhook URL
+      webhook-url: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=your-robot-key
+      # Sentinel AI frontend URL (for notification links)
+      frontend-url: http://localhost:8090
   dev:
     max-sql-per-scan: 50

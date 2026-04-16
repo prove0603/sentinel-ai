@@ -1,0 +1,63 @@
+# sentinel-ai 项目环境与工具规范
+
+## JDK 版本
+
+- **必须使用 JDK 21**
+- JDK 21 路径：`C:\Users\zhuangjie10\.jdks\jdk-21`（Temurin 21.0.6）
+- 系统默认 JAVA_HOME 是 JDK 8，**不能直接用**
+
+## Maven 构建
+
+构建前必须设置 JAVA_HOME 为 JDK 21：
+
+```powershell
+$env:JAVA_HOME = "$env:USERPROFILE\.jdks\jdk-21"
+mvn compile -f E:\cursor\sentinel-ai\pom.xml
+```
+
+**绝对禁止**直接执行 `mvn compile`，否则会因 JDK 8 导致 `无效的目标发行版: 21` 错误。
+
+## 数据库操作
+
+- **数据库：** PostgreSQL 18 + pgvector 0.8.2
+- **连接信息：** `localhost:5432/sentinel_ai`，用户 `postgres`，密码 `123456`
+
+### 方式一：psql 命令行（推荐）
+
+psql 已安装但未加入 PATH，需用完整路径调用：
+
+```powershell
+& "C:\Program Files\PostgreSQL\18\bin\psql.exe" -h localhost -U postgres -d sentinel_ai -c "SELECT 1"
+```
+
+### 方式二：JDBC 驱动执行 Java 脚本
+
+```powershell
+$env:JAVA_HOME = "$env:USERPROFILE\.jdks\jdk-21"
+& "$env:JAVA_HOME\bin\java" -cp ".;C:\Users\zhuangjie10\.m2\repository\org\postgresql\postgresql\42.7.10\postgresql-42.7.10.jar" YourScript.java
+```
+
+- JDBC 驱动路径：`C:\Users\zhuangjie10\.m2\repository\org\postgresql\postgresql\42.7.10\postgresql-42.7.10.jar`
+- JDBC URL：`jdbc:postgresql://localhost:5432/sentinel_ai`
+
+## 应用端口
+
+- 后端：8090
+- 前端开发（npm run dev）：5173
+
+### 启动后端前必须先清理端口
+
+用户可能通过 IDE 启动按钮运行后端，终端启动前**必须**先杀掉占用 8090 的旧进程，避免端口冲突：
+
+```powershell
+$pid = (netstat -ano | Select-String ':8090.*LISTENING' | ForEach-Object { ($_ -split '\s+')[-1] } | Select-Object -First 1); if ($pid) { Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2 }
+```
+
+### 终端启动后端完整命令
+
+```powershell
+# 1. 清理端口（注意用 $p8090 而不是 $pid，因为 $pid 是 PS 只读变量）
+$p8090 = (netstat -ano | Select-String ':8090.*LISTENING' | ForEach-Object { ($_ -split '\s+')[-1] } | Select-Object -First 1); if ($p8090) { Stop-Process -Id $p8090 -Force -ErrorAction SilentlyContinue; Start-Sleep -Seconds 2 }
+# 2. 设置环境变量并启动（AI_DASHSCOPE_API_KEY 必须设置，否则 Spring AI 自动配置会报错）
+$env:JAVA_HOME = "$env:USERPROFILE\.jdks\jdk-21"; $env:AI_DASHSCOPE_API_KEY = "sk-de9086a147684403aad2ecd0743ebce1"; mvn '-f' 'E:\cursor\sentinel-ai\sentinel-ai-server\pom.xml' 'spring-boot:run' '-Dspring-boot.run.profiles=dev'
+```

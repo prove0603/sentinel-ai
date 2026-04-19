@@ -49,6 +49,11 @@ logs/
 ### Deploy scripts (contain local paths/IP) ###
 deploy.ps1
 deploy.sh
+shutdown.ps1
+
+### ClassFinal encryption ###
+classfinal.txt
+*-encrypted.jar
 
 ### H2 database files ###
 data/
@@ -59,4 +64,6 @@ table-meta/
 ### Cursor IDE - only ignore personal/local settings, keep rules for project context ###
 .cursor/mcp.json
 .cursor/settings.json
+
+docs/aku
 
